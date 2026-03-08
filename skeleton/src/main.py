@@ -134,7 +134,30 @@ def create_app() -> FastAPI:
             ],
         ),
         "filevine": FilevineProvider(
-            default_sample_path=os.getenv("FILEVINE_SAMPLE_PATH")
+            default_sample_path=os.getenv("FILEVINE_SAMPLE_PATH"),
+            identity_url=os.getenv(
+                "FILEVINE_IDENTITY_URL",
+                "https://identity.filevine.com/connect/token",
+            ),
+            org_lookup_url=os.getenv(
+                "FILEVINE_ORG_LOOKUP_URL",
+                "https://api.filevineapp.com/fv-app/v2/utils/GetUserOrgsWithToken",
+            ),
+            projects_url=os.getenv(
+                "FILEVINE_PROJECTS_URL",
+                "https://api.filevineapp.com/fv-app/v2/Projects",
+            ),
+            client_id=os.getenv("FILEVINE_CLIENT_ID"),
+            client_secret=os.getenv("FILEVINE_CLIENT_SECRET"),
+            scopes=os.getenv(
+                "FILEVINE_SCOPES",
+                "fv.api.gateway.access tenant filevine.v2.api.* openid email fv.auth.tenant.read",
+            ),
+            user_agent=os.getenv(
+                "FILEVINE_USER_AGENT",
+                "firm-cms-integration-service
+                /1.0",
+            ),
         ),
     }
     transformers = {
@@ -377,7 +400,7 @@ def create_app() -> FastAPI:
             for result in results
         ]
 
-    #the field mapping endpoint (task for advanced stage)
+    #the field mapping endpoint used for firm-specific field mapping used to create and stores the mapping in field mapping table which is later used to create mapping_overrides in sync engine which is prefered over the default mapping in the sync engine (default mapping == provider specific mapping)
     @app.post("/firms/{firm_id}/mapping")
     async def save_mappings(firm_id: str, payload: MappingPayload) -> dict[str, Any]:
         firm = await repository.get_firm(firm_id)

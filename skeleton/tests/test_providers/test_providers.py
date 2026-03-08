@@ -251,6 +251,132 @@ def test_filevine_provider_reads_snapshot_records(tmp_path) -> None:
     assert result.next_state.metadata["record_count"] == 2
 
 
+def test_filevine_provider_exchanges_pat_for_live_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = FilevineProvider(
+        client_id="filevine-client-id",
+        client_secret="filevine-client-secret",
+        identity_url="https://identity.example.test/connect/token",
+        org_lookup_url="https://api.example.test/fv-app/v2/utils/GetUserOrgsWithToken",
+    )
+
+    class DummyResponse:
+        def __init__(self, payload: dict):
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return self._payload
+
+    class DummyAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url: str, data: dict | None = None, headers: dict | None = None):
+            if "identity" in url:
+                assert data is not None
+                assert data["grant_type"] == "personal_access_token"
+                assert data["token"] == "filevine-pat"
+                return DummyResponse(
+                    {
+                        "access_token": "live-access-token",
+                        "expires_in": 3600,
+                        "scope": "fv.api.gateway.access tenant",
+                    }
+                )
+            return DummyResponse(
+                {
+                    "data": [
+                        {
+                            "userId": 123,
+                            "orgId": 456,
+                        }
+                    ]
+                }
+            )
+
+    monkeypatch.setattr(httpx, "AsyncClient", DummyAsyncClient)
+
+    refreshed = asyncio.run(
+        provider.refresh_access_token(
+            {
+                "pat": "filevine-pat",
+            }
+        )
+    )
+
+    assert refreshed["access_token"] == "live-access-token"
+    assert refreshed["user_id"] == "123"
+    assert refreshed["org_id"] == "456"
+    assert "token_expires_at" in refreshed
+
+
+def test_filevine_provider_reads_live_records(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = FilevineProvider(
+        projects_url="https://api.example.test/fv-app/v2/Projects",
+    )
+
+    class DummyResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "projects": [
+                    {
+                        "project": {
+                            "project_id": "project-1",
+                            "phase": "intake",
+                            "last_activity_at": "2024-01-01T00:00:00Z",
+                        },
+                        "contact": {"full_name": "Jane Doe"},
+                    }
+                ]
+            }
+
+    class DummyAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url: str, headers: dict | None = None):
+            assert headers is not None
+            assert headers["Authorization"] == "Bearer live-access-token"
+            assert headers["x-fv-orgid"] == "456"
+            assert headers["x-fv-userid"] == "123"
+            return DummyResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", DummyAsyncClient)
+
+    result = asyncio.run(
+        provider.sync_cases(
+            firm_id="firm-2",
+            credentials={
+                "access_token": "live-access-token",
+                "user_id": "123",
+                "org_id": "456",
+            },
+        )
+    )
+
+    assert result.is_snapshot is False
+    assert len(result.records) == 1
+    assert result.next_state is not None
+    assert result.next_state.metadata["strategy"] == "live-pat"
+
+
 def test_filevine_provider_requires_sample_path() -> None:
     provider = FilevineProvider()
 

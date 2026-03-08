@@ -210,6 +210,81 @@ def test_sync_engine_refreshes_clio_credentials_from_integration() -> None:
     asyncio.run(repository.close())
 
 
+def test_sync_engine_refreshes_filevine_live_credentials_from_pat() -> None:
+    repository = asyncio.run(_create_clean_repository())
+    asyncio.run(
+        repository.save_firm(
+            FirmRecord(
+                firm_id="firm-1",
+                name="Firm One",
+            )
+        )
+    )
+    asyncio.run(
+        repository.save_firm_integration(
+            FirmIntegrationRecord(
+                firm_id="firm-1",
+                provider="filevine",
+                provider_credentials={
+                    "pat": "filevine-pat",
+                },
+            )
+        )
+    )
+
+    provider = FilevineProvider(client_id="client-id", client_secret="client-secret")
+
+    async def fake_refresh(credentials):
+        assert credentials["pat"] == "filevine-pat"
+        refreshed = dict(credentials)
+        refreshed["access_token"] = "live-access-token"
+        refreshed["user_id"] = "123"
+        refreshed["org_id"] = "456"
+        refreshed["token_expires_at"] = (
+            datetime.now(tz=timezone.utc) + timedelta(hours=1)
+        ).isoformat()
+        return refreshed
+
+    async def fake_sync_cases(*, firm_id, credentials, sync_state=None):
+        assert firm_id == "firm-1"
+        assert credentials["access_token"] == "live-access-token"
+        assert credentials["user_id"] == "123"
+        assert credentials["org_id"] == "456"
+        return ProviderSyncResult(
+            records=[
+                {
+                    "project": {
+                        "project_id": "project-1",
+                        "phase": "intake",
+                        "last_activity_at": "2024-01-01T00:00:00Z",
+                    },
+                    "contact": {"full_name": "Jane Doe"},
+                }
+            ],
+            next_state=None,
+            is_snapshot=False,
+        )
+
+    provider.refresh_access_token = fake_refresh  # type: ignore[method-assign]
+    provider.sync_cases = fake_sync_cases  # type: ignore[method-assign]
+
+    engine = SyncEngine(
+        repository=repository,
+        providers={"filevine": provider},
+        transformers={"filevine": FilevineTransformer()},
+    )
+
+    result = asyncio.run(engine.sync_provider(SyncRequest(firm_id="firm-1", provider="filevine")))
+    updated_integration = asyncio.run(repository.get_firm_integration("firm-1", "filevine"))
+
+    assert result.success is True
+    assert updated_integration is not None
+    assert updated_integration.provider_credentials["access_token"] == "live-access-token"
+    assert updated_integration.provider_credentials["org_id"] == "456"
+
+    asyncio.run(repository.close())
+
+
 def test_sync_scheduler_start_and_stop(monkeypatch) -> None:
     class DummyEngine:
         async def sync_provider(self, request):
