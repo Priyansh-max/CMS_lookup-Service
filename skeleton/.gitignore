@@ -1,0 +1,36 @@
+# Environment / secrets
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.development
+.env.test
+.env.production
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Test / tool caches
+.pytest_cache/
+.ruff_cache/
+
+# Packaging / build outputs
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE files
+.idea/
+.vscode/

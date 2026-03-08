@@ -1,0 +1,46 @@
+[
+  {
+    "project": {
+      "project_id": "project-1001",
+      "phase": "intake",
+      "status": "open",
+      "primary_attorney": "Alex Lawyer",
+      "last_activity_at": "2024-01-15T09:30:00Z"
+    },
+    "contact": {
+      "first_name": "Jon",
+      "last_name": "Smyth",
+      "mobile_phone": "111-222-3333",
+      "email": "jon.smyth@example.com"
+    }
+  },
+  {
+    "project": {
+      "project_id": "project-1002",
+      "phase": "investigation",
+      "status": "open",
+      "primary_attorney": "Taylor Counsel",
+      "last_activity_at": "2024-01-17T14:45:00Z"
+    },
+    "contact": {
+      "first_name": "Maria",
+      "last_name": "Lopez",
+      "mobile_phone": "222-333-4444",
+      "email": "maria.lopez@example.com"
+    }
+  },
+  {
+    "project": {
+      "project_id": "project-1003",
+      "phase": "signed",
+      "status": "active",
+      "primary_attorney": "Jordan Advocate",
+      "last_activity_at": "2024-01-20T11:00:00Z"
+    },
+    "contact": {
+      "full_name": "John Smith",
+      "mobile_phone": "333-444-5555",
+      "email": "john.smith@example.com"
+    }
+  }
+]

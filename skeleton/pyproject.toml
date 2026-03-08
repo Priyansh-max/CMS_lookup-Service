@@ -1,0 +1,25 @@
+[project]
+name = "cms-integration"
+version = "0.1.0"
+description = "Case Management System Integration Layer"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0",
+    "httpx>=0.25",
+    "sqlalchemy",
+    "aiosqlite",
+    "apscheduler",
+    "fastapi",
+    "uvicorn",
+    "rapidfuzz",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "ruff>=0.1",
+]
+
+[tool.ruff]
+line-length = 100

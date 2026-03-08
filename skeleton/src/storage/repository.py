@@ -1,0 +1,243 @@
+"""Storage implementation."""
+
+from __future__ import annotations
+
+from datetime import timezone
+
+from sqlalchemy import delete, or_, select
+
+from src.models.canonical import (
+    CaseRecord,
+    CaseSearchQuery,
+    FieldMappingRecord,
+    StoredSyncState,
+)
+from src.storage.base import CaseRepository
+from src.storage.database import (
+    Base,
+    CaseTable,
+    FieldMappingTable,
+    SyncStateTable,
+    create_engine_and_sessionmaker,
+)
+
+
+def _to_case_record(row: CaseTable) -> CaseRecord:
+    updated_at = row.updated_at
+    if updated_at is not None and updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+
+    return CaseRecord(
+        firm_id=row.firm_id,
+        provider=row.provider,
+        external_case_id=row.external_case_id,
+        client_name=row.client_name,
+        client_phone=row.client_phone,
+        client_email=row.client_email,
+        case_status=row.case_status,
+        assigned_staff=row.assigned_staff,
+        updated_at=updated_at,
+        raw_payload=row.raw_payload or {},
+    )
+
+
+class RepositoryError(Exception):
+    """Raised when repository operations fail."""
+
+
+class CaseRepositoryImpl(CaseRepository):
+    """SQLAlchemy-backed repository implementation."""
+
+    def __init__(self, database_url: str):
+        self.engine, self.session_factory = create_engine_and_sessionmaker(database_url)
+
+    async def initialize(self) -> None:
+        async with self.engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+
+    async def save_case(self, case: CaseRecord) -> None:
+        await self.save_cases([case])
+
+    async def save_cases(self, cases: list[CaseRecord]) -> None:
+        if not cases:
+            return
+
+        async with self.session_factory() as session:
+            for case in cases:
+                result = await session.execute(
+                    select(CaseTable).where(
+                        CaseTable.firm_id == case.firm_id,
+                        CaseTable.provider == case.provider,
+                        CaseTable.external_case_id == case.external_case_id,
+                    )
+                )
+                existing = result.scalar_one_or_none()
+
+                if existing is None:
+                    session.add(
+                        CaseTable(
+                            firm_id=case.firm_id,
+                            provider=case.provider,
+                            external_case_id=case.external_case_id,
+                            client_name=case.client_name,
+                            normalized_client_name=case.normalized_client_name,
+                            client_phone=case.client_phone,
+                            client_email=case.client_email,
+                            case_status=case.case_status,
+                            assigned_staff=case.assigned_staff,
+                            updated_at=case.updated_at,
+                            raw_payload=case.raw_payload,
+                        )
+                    )
+                    continue
+
+                existing.client_name = case.client_name
+                existing.normalized_client_name = case.normalized_client_name
+                existing.client_phone = case.client_phone
+                existing.client_email = case.client_email
+                existing.case_status = case.case_status
+                existing.assigned_staff = case.assigned_staff
+                existing.updated_at = case.updated_at
+                existing.raw_payload = case.raw_payload
+
+            await session.commit()
+
+    async def find_candidates_by_name(self, query: CaseSearchQuery) -> list[CaseRecord]:
+        normalized_name = query.name.strip().lower()
+        tokens = [token for token in normalized_name.split() if token]
+
+        async with self.session_factory() as session:
+            stmt = select(CaseTable).where(CaseTable.firm_id == query.firm_id)
+            if normalized_name:
+                filters = [CaseTable.normalized_client_name.contains(normalized_name)]
+                filters.extend(
+                    CaseTable.normalized_client_name.contains(token) for token in tokens[:3]
+                )
+                stmt = stmt.where(or_(*filters))
+
+            result = await session.execute(stmt.limit(max(query.limit * 10, 25)))
+            rows = result.scalars().all()
+
+            # If the search terms are too noisy to match anything, return a small
+            # tenant-scoped fallback set so the lookup layer can still rank results.
+            if not rows:
+                fallback = await session.execute(
+                    select(CaseTable).where(CaseTable.firm_id == query.firm_id).limit(50)
+                )
+                rows = fallback.scalars().all()
+
+            return [_to_case_record(row) for row in rows]
+
+    async def get_case_by_external_id(
+        self,
+        firm_id: str,
+        provider: str,
+        external_case_id: str,
+    ) -> CaseRecord | None:
+        async with self.session_factory() as session:
+            result = await session.execute(
+                select(CaseTable).where(
+                    CaseTable.firm_id == firm_id,
+                    CaseTable.provider == provider,
+                    CaseTable.external_case_id == external_case_id,
+                )
+            )
+            row = result.scalar_one_or_none()
+            if row is None:
+                return None
+            return _to_case_record(row)
+
+    async def get_sync_state(self, firm_id: str, provider: str) -> StoredSyncState | None:
+        async with self.session_factory() as session:
+            result = await session.execute(
+                select(SyncStateTable).where(
+                    SyncStateTable.firm_id == firm_id,
+                    SyncStateTable.provider == provider,
+                )
+            )
+            row = result.scalar_one_or_none()
+            if row is None:
+                return None
+            since = row.since
+            if since is not None and since.tzinfo is None:
+                since = since.replace(tzinfo=timezone.utc)
+            return StoredSyncState(
+                firm_id=row.firm_id,
+                provider=row.provider,
+                since=since,
+                cursor=row.cursor,
+                page_token=row.page_token,
+                metadata=row.state_metadata or {},
+            )
+
+    async def upsert_sync_state(self, sync_state: StoredSyncState) -> None:
+        async with self.session_factory() as session:
+            result = await session.execute(
+                select(SyncStateTable).where(
+                    SyncStateTable.firm_id == sync_state.firm_id,
+                    SyncStateTable.provider == sync_state.provider,
+                )
+            )
+            existing = result.scalar_one_or_none()
+            if existing is None:
+                session.add(
+                    SyncStateTable(
+                        firm_id=sync_state.firm_id,
+                        provider=sync_state.provider,
+                        since=sync_state.since,
+                        cursor=sync_state.cursor,
+                        page_token=sync_state.page_token,
+                        state_metadata=sync_state.metadata,
+                    )
+                )
+            else:
+                existing.since = sync_state.since
+                existing.cursor = sync_state.cursor
+                existing.page_token = sync_state.page_token
+                existing.state_metadata = sync_state.metadata
+            await session.commit()
+
+    async def get_field_mappings(
+        self,
+        firm_id: str,
+        provider: str,
+    ) -> dict[str, list[str]]:
+        async with self.session_factory() as session:
+            result = await session.execute(
+                select(FieldMappingTable).where(
+                    FieldMappingTable.firm_id == firm_id,
+                    FieldMappingTable.provider == provider,
+                )
+            )
+            rows = result.scalars().all()
+            return {row.canonical_field: list(row.source_fields or []) for row in rows}
+
+    async def save_field_mappings(self, mappings: list[FieldMappingRecord]) -> None:
+        if not mappings:
+            return
+
+        firm_id = mappings[0].firm_id
+        provider = mappings[0].provider
+
+        async with self.session_factory() as session:
+            await session.execute(
+                delete(FieldMappingTable).where(
+                    FieldMappingTable.firm_id == firm_id,
+                    FieldMappingTable.provider == provider,
+                )
+            )
+            session.add_all(
+                [
+                    FieldMappingTable(
+                        firm_id=mapping.firm_id,
+                        provider=mapping.provider,
+                        canonical_field=mapping.canonical_field,
+                        source_fields=mapping.source_fields,
+                    )
+                    for mapping in mappings
+                ]
+            )
+            await session.commit()
+
+    async def close(self) -> None:
+        await self.engine.dispose()
