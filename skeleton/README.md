@@ -8,27 +8,40 @@ pip install -e ".[dev]"
 
 Copy `.env.example` to `.env` and fill in the values you want to use.
 
-The system is now PostgreSQL-only for runtime, manual testing, and automated tests.
-Create dedicated databases first and point the env vars to them, for example:
+The project is PostgreSQL-only for runtime and automated tests.
+
+Example:
 
 ```env
 DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/cms_integration
 TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/cms_integration_test
-MANUAL_TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/cms_integration_manual
 ```
 
 `TEST_DATABASE_URL` should always point to a disposable test database because the test suite resets schema state.
 
-For OAuth providers, keep app-level OAuth secrets in `.env` and store per-firm tokens in the integration record:
+## App-Level Provider Config
+
+These values belong to the application, not to a specific firm:
 
 ```env
-CLIO_CLIENT_ID=your-clio-app-client-id
-CLIO_CLIENT_SECRET=your-clio-app-client-secret
-CLIO_REDIRECT_URI=http://127.0.0.1/oauth/callback
-CLIO_AUTH_URL=https://app.clio.com/oauth/authorize
-CLIO_TOKEN_URL=https://app.clio.com/oauth/token
-CLIO_SCOPES=matters:read,contacts:read
+CLIO_CLIENT_ID=
+CLIO_CLIENT_SECRET=
+CLIO_REDIRECT_URI=
+CLIO_SCOPES=
+
+FILEVINE_CLIENT_ID=
+FILEVINE_CLIENT_SECRET=
+FILEVINE_SCOPES=
 ```
+
+Optional provider URLs exist in code with defaults:
+
+- Clio auth URL defaults to `https://app.clio.com/oauth/authorize`
+- Clio token URL defaults to `https://app.clio.com/oauth/token`
+- Clio API base URL defaults to `https://app.clio.com/api/v4`
+- Filevine identity URL defaults to `https://identity.filevine.com/connect/token`
+- Filevine org lookup URL defaults to `https://api.filevineapp.com/fv-app/v2/utils/GetUserOrgsWithToken`
+- Filevine projects URL defaults to `https://api.filevineapp.com/fv-app/v2/Projects`
 
 ## Running
 
@@ -36,7 +49,7 @@ CLIO_SCOPES=matters:read,contacts:read
 python -m src.main
 ```
 
-The API will start on `http://127.0.0.1:8000`.
+The API starts on `http://127.0.0.1:8000`.
 
 ## Running Tests
 
@@ -44,13 +57,13 @@ The API will start on `http://127.0.0.1:8000`.
 python -m pytest
 ```
 
-The test suite requires `TEST_DATABASE_URL` and will fail fast if it is not set.
+The test suite requires `TEST_DATABASE_URL`.
 
-## Endpoints
+## API Endpoints
 
 - `GET /health`
-- `GET /auth/{provider}/start?firm_id=<firm_id>`
-- `GET /auth/{provider}/callback?code=<code>&state=<state>`
+- `POST /auth/clio/bootstrap`
+- `POST /auth/filevine/bootstrap`
 - `GET /firms`
 - `POST /firms`
 - `GET /firms/{firm_id}/integrations`
@@ -59,12 +72,88 @@ The test suite requires `TEST_DATABASE_URL` and will fail fast if it is not set.
 - `POST /sync`
 - `POST /firms/{firm_id}/mapping`
 
-## Manual Sync Payload
+## Firm Bootstrap Flow
 
-`POST /sync` can either:
+Create the firm first:
 
-- use default sync requests configured in `.env`
-- or accept an explicit request body like:
+```json
+{
+  "firm_id": "firm-1",
+  "name": "Firm One"
+}
+```
+
+### Clio
+
+Phase 1: get the Clio authorization URL
+
+```json
+{
+  "firm_id": "firm-1"
+}
+```
+
+Send that to `POST /auth/clio/bootstrap`.
+
+The response includes `authorization_url`.
+
+Phase 2: after approval, exchange the returned code and store initial credentials
+
+```json
+{
+  "firm_id": "firm-1",
+  "code": "authorization-code-from-clio"
+}
+```
+
+That stores the initial Clio integration credentials in `firm_integrations`, including values like:
+
+```json
+{
+  "access_token": "initial-access-token",
+  "refresh_token": "refresh-token",
+  "token_expires_at": "2026-03-08T12:00:00+00:00"
+}
+```
+
+Later sync runs automatically refresh Clio credentials from the stored `refresh_token`.
+
+### Filevine
+
+Bootstrap Filevine by storing the firm PAT:
+
+```json
+{
+  "firm_id": "firm-1",
+  "pat": "filevine-personal-access-token"
+}
+```
+
+Send that to `POST /auth/filevine/bootstrap`.
+
+That stores the initial Filevine integration credentials in `firm_integrations`:
+
+```json
+{
+  "pat": "filevine-personal-access-token"
+}
+```
+
+Later sync runs use that PAT plus app-level Filevine client credentials to derive and persist:
+
+- `access_token`
+- `user_id`
+- `org_id`
+- `token_expires_at`
+- other runtime metadata
+
+## Sync Modes
+
+### Filevine local JSON mode
+
+This remains the primary dev/demo path.
+
+You can still sync with an explicit payload like:
 
 ```json
 {
@@ -80,51 +169,51 @@ The test suite requires `TEST_DATABASE_URL` and will fail fast if it is not set.
 }
 ```
 
-You can also store credentials on an integration first and then sync without including them in the request body:
+### Integration-backed sync
+
+If credentials are already stored in `firm_integrations`, you can sync without sending them again:
 
 ```json
 {
   "requests": [
     {
-      "firm_id": "firm-filevine",
+      "firm_id": "firm-1",
+      "provider": "clio"
+    },
+    {
+      "firm_id": "firm-1",
       "provider": "filevine"
     }
   ]
 }
 ```
 
-For an OAuth-connected provider like Clio, the integration credentials are stored in `firm_integrations` after the first successful callback:
+## Field Mapping Overrides
+
+Provider transformers ship with provider-level default mappings.
+
+If a specific firm uses different field names for a provider, save firm-specific overrides through:
+
+- `POST /firms/{firm_id}/mapping`
+
+Example:
 
 ```json
 {
   "provider": "clio",
-  "provider_credentials": {
-    "access_token": "initial-access-token",
-    "refresh_token": "refresh-token",
-    "token_expires_at": "2026-03-08T12:00:00+00:00"
+  "mappings": {
+    "client_name": ["display_name"],
+    "case_status": ["state"]
   }
 }
 ```
 
-During sync, the engine will refresh the Clio access token automatically when the token is expired or close to expiry, then persist the new token set back to the integration row.
+During sync, these overrides are preferred over provider defaults.
 
-## Generic OAuth Bootstrap
+## Design Notes
 
-The API now exposes provider-agnostic OAuth route shapes:
+- `firms` stores tenant identity
+- `firm_integrations` stores provider-specific credentials/config
+- `cases`, `sync_state`, and `field_mappings` are still keyed by `firm_id + provider`
 
-- `GET /auth/{provider}/start?firm_id=<firm_id>`
-- `GET /auth/{provider}/callback?code=<code>&state=<state>`
-
-Today, only `clio` implements this OAuth capability. Other providers can reuse the same route shape later by implementing the same provider-side methods.
-
-The intended bootstrap flow is:
-
-1. Create the firm with `POST /firms`
-2. Start OAuth with `GET /auth/{provider}/start?firm_id=<firm_id>`
-3. Complete the provider callback with `GET /auth/{provider}/callback?...`
-4. The callback stores the provider tokens in `firm_integrations`
-5. Later `/sync` calls read credentials from `firm_integrations` instead of `.env`
-
-## Design Decisions
-
-Document your design decisions in `docs/design.md`.
+See `docs/design.md` for the broader architecture and tradeoff notes.
