@@ -12,7 +12,7 @@ for AI voice agents making sure extendibility for new CMS later with changing th
 - `Clio` provider support through direct API calls when a valid access token is available
 - `Filevine` provider support through local JSON / snapshot-style ingestion
 - Canonical case transformation into a shared `CaseRecord`
-- Local persistence for canonical cases, sync state, and field mappings
+- Local persistence for canonical cases, sync state, and field mappings through `SQLAlchemy`
 - A sync engine that orchestrates provider fetch -> transform -> persist -> sync-state update
 - Scheduled sync support through `APScheduler`
 - A `lookup_by_name` API with exact match first and fuzzy fallback ranking
@@ -80,18 +80,18 @@ Main fields for now:
     https://support.filevine.com/hc/en-us/articles/46857222439323-Data-Export-Options
     https://support.filevine.com/hc/en-us/articles/41499337170587-DataBridge
 
-- Database: the implementation currently runs on `SQLite` through `SQLAlchemy`, while the target production database is still `PostgreSQL`.
+- Database: `PostgreSQL` is the primary runtime database, accessed through `SQLAlchemy`.
 
-  Why this is the current choice:
-  - `SQLite` makes the system runnable immediately on any local machine with almost no setup friction
-  - `SQLAlchemy` keeps the storage layer portable, so moving to PostgreSQL later does not require rewriting business logic
-  - for this current implementation size, local correctness and fast iteration matter more than introducing database operational overhead too early
+  Why this is the right choice:
+  - this system is write-heavy enough that sync behavior, idempotent upserts, and tenant isolation matter
+  - PostgreSQL is a better fit than SQLite for concurrent access, multi-tenant growth, and operational reliability
+  - SQLAlchemy gives a clean repository boundary and keeps the codebase maintainable without locking business logic to raw SQL
+  - SQLAlchemy also keeps the implementation portable enough that tests can still run on SQLite where that improves local speed
 
-  Why PostgreSQL is still the production target:
-  - stronger concurrency behavior
-  - better support for real multi-tenant workloads
-  - better operational fit for larger sync volume and long-term scaling
-  - more robust indexing and query options for future growth
+  Why not another option:
+  - not SQLite as the primary runtime store, because it is not the right long-term choice for concurrent production workloads
+  - not a document store, because the current access patterns are relational and strongly keyed by tenant, provider, and case identity
+  - not raw SQL everywhere, because the schema and repository layer are still evolving and maintainability matters
 
 - Sync: the sync engine should be shared, but each provider should be allowed to define its own incremental ingestion strategy. For providers like Clio, that may be `last_synced_at`. For providers that do not expose reliable last-updated filtering, we should support snapshot-style ingestion with idempotent upserts.
 
@@ -274,6 +274,12 @@ The rest of the system should stay the same:
 - false positives in fuzzy name matching
 - tenant isolation so one firm never sees another firm’s cases
 
+## Why SQLAlchemy + PostgreSQL
+
+- `PostgreSQL` is the correct primary database for this system because it supports stronger concurrency, better indexing, better operational behavior, and cleaner long-term scaling for sync-heavy multi-tenant workloads.
+- `SQLAlchemy` is the correct ORM choice here because it gives us a clean persistence boundary, expressive schema definitions, async support, and portability between runtime and test environments.
+- This combination keeps the architecture production-oriented without overcomplicating the repository layer with hand-written SQL too early.
+
 ## How I Would Make This Production Ready
 
 - Add structured logging around sync runs, provider failures, and lookup latency.
@@ -284,7 +290,7 @@ The rest of the system should stay the same:
 - Add health checks and clear error responses for operational visibility.
 - Add unit tests for each layer and integration tests for sync plus lookup flows.
 - Keep provider-specific logic isolated so future CMS integrations do not affect the core system heavily.
-- Move from SQLite to PostgreSQL for the real deployment environment.
+- Keep PostgreSQL as the real deployment database and add migration tooling around it.
 - Add a `firms` table and foreign key constraints to enforce tenant data integrity.
 - Introduce secret storage and OAuth token refresh handling for live provider integrations.
 - Separate scheduler execution from the API process if sync volume or operational complexity grows.

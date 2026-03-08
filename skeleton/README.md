@@ -8,6 +8,17 @@ pip install -e ".[dev]"
 
 Copy `.env.example` to `.env` and fill in the values you want to use.
 
+The system is now PostgreSQL-only for runtime, manual testing, and automated tests.
+Create dedicated databases first and point the env vars to them, for example:
+
+```env
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/cms_integration
+TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/cms_integration_test
+MANUAL_TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/cms_integration_manual
+```
+
+`TEST_DATABASE_URL` should always point to a disposable test database because the test suite resets schema state.
+
 ## Running
 
 ```bash
@@ -15,6 +26,14 @@ python -m src.main
 ```
 
 The API will start on `http://127.0.0.1:8000`.
+
+## Running Tests
+
+```bash
+python -m pytest
+```
+
+The test suite requires `TEST_DATABASE_URL` and will fail fast if it is not set.
 
 ## Endpoints
 
