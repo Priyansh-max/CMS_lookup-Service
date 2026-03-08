@@ -2,18 +2,31 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import datetime, timezone
 
 from src.models.canonical import StoredSyncState
 from src.providers.filevine import FilevineProvider
+from src.storage.database import Base
 from src.storage.repository import CaseRepositoryImpl
 from src.sync.engine import SyncEngine, SyncRequest
 from src.sync.scheduler import SyncScheduler
 from src.transformers.filevine_transformer import FilevineTransformer
 
 
-def _database_url(tmp_path) -> str:
-    return f"sqlite+aiosqlite:///{tmp_path / 'sync.db'}"
+def _test_database_url() -> str:
+    database_url = os.getenv("TEST_DATABASE_URL")
+    if not database_url:
+        raise RuntimeError("TEST_DATABASE_URL is required for automated tests")
+    return database_url
+
+
+async def _create_clean_repository() -> CaseRepositoryImpl:
+    repository = CaseRepositoryImpl(_test_database_url())
+    async with repository.engine.begin() as connection:
+        await connection.run_sync(Base.metadata.drop_all)
+        await connection.run_sync(Base.metadata.create_all)
+    return repository
 
 
 def test_sync_engine_runs_snapshot_provider_end_to_end(tmp_path) -> None:
@@ -36,8 +49,7 @@ def test_sync_engine_runs_snapshot_provider_end_to_end(tmp_path) -> None:
         encoding="utf-8",
     )
 
-    repository = CaseRepositoryImpl(_database_url(tmp_path))
-    asyncio.run(repository.initialize())
+    repository = asyncio.run(_create_clean_repository())
     engine = SyncEngine(
         repository=repository,
         providers={"filevine": FilevineProvider()},
@@ -94,8 +106,7 @@ def test_sync_engine_reports_partial_failure_for_bad_record(tmp_path) -> None:
         encoding="utf-8",
     )
 
-    repository = CaseRepositoryImpl(_database_url(tmp_path))
-    asyncio.run(repository.initialize())
+    repository = asyncio.run(_create_clean_repository())
     engine = SyncEngine(
         repository=repository,
         providers={"filevine": FilevineProvider()},

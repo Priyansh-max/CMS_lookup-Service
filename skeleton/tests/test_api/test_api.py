@@ -1,14 +1,34 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 
 from fastapi.testclient import TestClient
 
 from src.main import create_app
+from src.storage.database import Base
+from src.storage.repository import CaseRepositoryImpl
 
 
-def test_health_endpoint(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'api.db'}")
+def _test_database_url() -> str:
+    database_url = os.getenv("TEST_DATABASE_URL")
+    if not database_url:
+        raise RuntimeError("TEST_DATABASE_URL is required for automated tests")
+    return database_url
+
+
+async def _reset_test_database() -> None:
+    repository = CaseRepositoryImpl(_test_database_url())
+    async with repository.engine.begin() as connection:
+        await connection.run_sync(Base.metadata.drop_all)
+        await connection.run_sync(Base.metadata.create_all)
+    await repository.close()
+
+
+def test_health_endpoint(monkeypatch) -> None:
+    asyncio.run(_reset_test_database())
+    monkeypatch.setenv("DATABASE_URL", _test_database_url())
     monkeypatch.setenv("SCHEDULER_ENABLED", "false")
 
     app = create_app()
@@ -44,7 +64,8 @@ def test_sync_lookup_and_mapping_end_to_end(monkeypatch, tmp_path) -> None:
         encoding="utf-8",
     )
 
-    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'api_full.db'}")
+    asyncio.run(_reset_test_database())
+    monkeypatch.setenv("DATABASE_URL", _test_database_url())
     monkeypatch.setenv("SCHEDULER_ENABLED", "false")
 
     app = create_app()
@@ -84,9 +105,9 @@ def test_sync_lookup_and_mapping_end_to_end(monkeypatch, tmp_path) -> None:
         assert mapping_response.status_code == 200
         assert mapping_response.json()["saved_mappings"] == 1
 
-
-def test_sync_endpoint_requires_requests_when_no_defaults(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'api_empty.db'}")
+def test_sync_endpoint_requires_requests_when_no_defaults(monkeypatch) -> None:
+    asyncio.run(_reset_test_database())
+    monkeypatch.setenv("DATABASE_URL", _test_database_url())
     monkeypatch.setenv("SCHEDULER_ENABLED", "false")
     monkeypatch.delenv("CLIO_ACCESS_TOKEN", raising=False)
     monkeypatch.delenv("FILEVINE_SAMPLE_PATH", raising=False)

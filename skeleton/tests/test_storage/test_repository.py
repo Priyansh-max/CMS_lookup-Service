@@ -1,19 +1,66 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import datetime, timezone
 
-from src.models.canonical import CaseRecord, CaseSearchQuery, FieldMappingRecord, StoredSyncState
+from src.models.canonical import (
+    CaseRecord,
+    CaseSearchQuery,
+    FieldMappingRecord,
+    FirmRecord,
+    StoredSyncState,
+)
+from src.storage.database import Base
 from src.storage.repository import CaseRepositoryImpl
 
 
-def _database_url(tmp_path) -> str:
-    return f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"
+def _test_database_url() -> str:
+    database_url = os.getenv("TEST_DATABASE_URL")
+    if not database_url:
+        raise RuntimeError("TEST_DATABASE_URL is required for automated tests")
+    return database_url
 
 
-def test_repository_saves_and_updates_cases(tmp_path) -> None:
-    repository = CaseRepositoryImpl(_database_url(tmp_path))
-    asyncio.run(repository.initialize())
+async def _create_clean_repository() -> CaseRepositoryImpl:
+    repository = CaseRepositoryImpl(_test_database_url())
+    async with repository.engine.begin() as connection:
+        await connection.run_sync(Base.metadata.drop_all)
+        await connection.run_sync(Base.metadata.create_all)
+    return repository
+
+
+def _save_firm(repository: CaseRepositoryImpl, firm_id: str, provider: str = "clio") -> None:
+    asyncio.run(
+        repository.save_firm(
+            FirmRecord(
+                firm_id=firm_id,
+                name=f"Firm {firm_id}",
+                provider=provider,
+            )
+        )
+    )
+
+
+def test_repository_saves_and_lists_firms() -> None:
+    repository = asyncio.run(_create_clean_repository())
+
+    _save_firm(repository, "firm-1", provider="clio")
+    _save_firm(repository, "firm-2", provider="filevine")
+
+    firms = asyncio.run(repository.list_firms())
+    stored = asyncio.run(repository.get_firm("firm-1"))
+
+    assert [firm.firm_id for firm in firms] == ["firm-1", "firm-2"]
+    assert stored is not None
+    assert stored.provider == "clio"
+
+    asyncio.run(repository.close())
+
+
+def test_repository_saves_and_updates_cases() -> None:
+    repository = asyncio.run(_create_clean_repository())
+    _save_firm(repository, "firm-1")
 
     first = CaseRecord(
         firm_id="firm-1",
@@ -43,9 +90,10 @@ def test_repository_saves_and_updates_cases(tmp_path) -> None:
     asyncio.run(repository.close())
 
 
-def test_repository_find_candidates_is_tenant_scoped(tmp_path) -> None:
-    repository = CaseRepositoryImpl(_database_url(tmp_path))
-    asyncio.run(repository.initialize())
+def test_repository_find_candidates_is_tenant_scoped() -> None:
+    repository = asyncio.run(_create_clean_repository())
+    _save_firm(repository, "firm-1")
+    _save_firm(repository, "firm-2")
 
     asyncio.run(
         repository.save_cases(
@@ -76,9 +124,9 @@ def test_repository_find_candidates_is_tenant_scoped(tmp_path) -> None:
     asyncio.run(repository.close())
 
 
-def test_repository_sync_state_round_trip(tmp_path) -> None:
-    repository = CaseRepositoryImpl(_database_url(tmp_path))
-    asyncio.run(repository.initialize())
+def test_repository_sync_state_round_trip() -> None:
+    repository = asyncio.run(_create_clean_repository())
+    _save_firm(repository, "firm-1", provider="filevine")
 
     state = StoredSyncState(
         firm_id="firm-1",
@@ -97,9 +145,9 @@ def test_repository_sync_state_round_trip(tmp_path) -> None:
     asyncio.run(repository.close())
 
 
-def test_repository_saves_and_replaces_field_mappings(tmp_path) -> None:
-    repository = CaseRepositoryImpl(_database_url(tmp_path))
-    asyncio.run(repository.initialize())
+def test_repository_saves_and_replaces_field_mappings() -> None:
+    repository = asyncio.run(_create_clean_repository())
+    _save_firm(repository, "firm-1", provider="filevine")
 
     asyncio.run(
         repository.save_field_mappings(
