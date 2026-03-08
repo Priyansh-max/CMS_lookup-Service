@@ -3,7 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from datetime import datetime, timedelta, timezone
 
+from src.models.canonical import CaseRecord, FirmIntegrationRecord, FirmRecord
+from src.providers.base import ProviderSyncResult
+from src.providers.clio import ClioProvider
 from src.providers.filevine import FilevineProvider
 from src.storage.database import Base
 from src.storage.repository import CaseRepositoryImpl
@@ -128,6 +132,80 @@ def test_sync_engine_reports_partial_failure_for_bad_record(tmp_path) -> None:
     assert result.partial_failure is True
     assert result.failed_records == 1
     assert result.records_saved == 1
+
+    asyncio.run(repository.close())
+
+
+def test_sync_engine_refreshes_clio_credentials_from_integration() -> None:
+    repository = asyncio.run(_create_clean_repository())
+    asyncio.run(
+        repository.save_firm(
+            FirmRecord(
+                firm_id="firm-1",
+                name="Firm One",
+            )
+        )
+    )
+    asyncio.run(
+        repository.save_firm_integration(
+            FirmIntegrationRecord(
+                firm_id="firm-1",
+                provider="clio",
+                provider_credentials={
+                    "access_token": "expired-token",
+                    "refresh_token": "refresh-token",
+                    "token_expires_at": (
+                        datetime.now(tz=timezone.utc) - timedelta(minutes=5)
+                    ).isoformat(),
+                },
+            )
+        )
+    )
+
+    provider = ClioProvider(client_id="client-id", client_secret="client-secret")
+
+    async def fake_refresh(credentials):
+        assert credentials["refresh_token"] == "refresh-token"
+        refreshed = dict(credentials)
+        refreshed["access_token"] = "fresh-token"
+        refreshed["token_expires_at"] = (
+            datetime.now(tz=timezone.utc) + timedelta(hours=1)
+        ).isoformat()
+        return refreshed
+
+    async def fake_sync_cases(*, firm_id, credentials, sync_state=None):
+        assert firm_id == "firm-1"
+        assert credentials["access_token"] == "fresh-token"
+        return ProviderSyncResult(
+            records=[{"id": "matter-1", "client": {"name": "Jane Doe"}, "updated_at": "2024-01-01T00:00:00Z"}],
+            next_state=None,
+            is_snapshot=False,
+        )
+
+    provider.refresh_access_token = fake_refresh  # type: ignore[method-assign]
+    provider.sync_cases = fake_sync_cases  # type: ignore[method-assign]
+
+    class DummyTransformer:
+        def transform(self, raw_record, *, firm_id, mapping_overrides):
+            return CaseRecord(
+                firm_id=firm_id,
+                provider="clio",
+                external_case_id=raw_record["id"],
+                client_name=raw_record["client"]["name"],
+            )
+
+    engine = SyncEngine(
+        repository=repository,
+        providers={"clio": provider},
+        transformers={"clio": DummyTransformer()},  # type: ignore[arg-type]
+    )
+
+    result = asyncio.run(engine.sync_provider(SyncRequest(firm_id="firm-1", provider="clio")))
+    updated_integration = asyncio.run(repository.get_firm_integration("firm-1", "clio"))
+
+    assert result.success is True
+    assert updated_integration is not None
+    assert updated_integration.provider_credentials["access_token"] == "fresh-token"
 
     asyncio.run(repository.close())
 

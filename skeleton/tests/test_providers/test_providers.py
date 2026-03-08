@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -140,6 +140,93 @@ def test_clio_provider_converts_timeout_to_temporary_error(monkeypatch: pytest.M
                 credentials={"access_token": "token"},
             )
         )
+
+
+def test_clio_provider_marks_expired_credentials_for_refresh() -> None:
+    provider = ClioProvider(
+        api_base_url="https://example.test",
+        client_id="client-id",
+        client_secret="client-secret",
+    )
+
+    needs_refresh = provider.credentials_need_refresh(
+        {
+            "access_token": "token",
+            "refresh_token": "refresh-token",
+            "token_expires_at": (
+                datetime.now(tz=timezone.utc) - timedelta(minutes=5)
+            ).isoformat(),
+        }
+    )
+
+    assert needs_refresh is True
+
+
+def test_clio_provider_refreshes_access_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = ClioProvider(
+        api_base_url="https://example.test",
+        oauth_token_url="https://example.test/oauth/token",
+        client_id="client-id",
+        client_secret="client-secret",
+    )
+
+    class DummyResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "access_token": "new-access-token",
+                "refresh_token": "new-refresh-token",
+                "expires_in": 3600,
+                "token_type": "Bearer",
+            }
+
+    class DummyAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url: str, data: dict, headers: dict) -> DummyResponse:
+            assert data["grant_type"] == "refresh_token"
+            assert data["refresh_token"] == "old-refresh-token"
+            return DummyResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", DummyAsyncClient)
+
+    refreshed = asyncio.run(
+        provider.refresh_access_token(
+            {
+                "access_token": "old-access-token",
+                "refresh_token": "old-refresh-token",
+            }
+        )
+    )
+
+    assert refreshed["access_token"] == "new-access-token"
+    assert refreshed["refresh_token"] == "new-refresh-token"
+    assert "token_expires_at" in refreshed
+
+
+def test_clio_provider_builds_authorize_url() -> None:
+    provider = ClioProvider(
+        client_id="client-id",
+        redirect_uri="http://127.0.0.1/oauth/callback",
+        scopes=["matters:read", "contacts:read"],
+    )
+
+    url = provider.build_authorize_url(state='{"firm_id":"firm-1","provider":"clio"}')
+
+    assert "response_type=code" in url
+    assert "client_id=client-id" in url
+    assert "redirect_uri=" in url
+    assert "state=" in url
+    assert "scope=" in url
 
 
 def test_filevine_provider_reads_snapshot_records(tmp_path) -> None:

@@ -39,6 +39,57 @@ def test_health_endpoint(monkeypatch) -> None:
     assert response.json()["status"] == "ok"
 
 
+def test_auth_start_and_callback_for_clio(monkeypatch) -> None:
+    asyncio.run(_reset_test_database())
+    monkeypatch.setenv("DATABASE_URL", _test_database_url())
+    monkeypatch.setenv("SCHEDULER_ENABLED", "false")
+    monkeypatch.setenv("CLIO_CLIENT_ID", "client-id")
+    monkeypatch.setenv("CLIO_CLIENT_SECRET", "client-secret")
+    monkeypatch.setenv("CLIO_REDIRECT_URI", "http://127.0.0.1/oauth/callback")
+
+    async def fake_exchange(self, code: str) -> dict:
+        assert code == "auth-code"
+        return {
+            "access_token": "new-access-token",
+            "refresh_token": "new-refresh-token",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+        }
+
+    monkeypatch.setattr("src.providers.clio.ClioProvider.exchange_code_for_token", fake_exchange)
+
+    app = create_app()
+    with TestClient(app) as client:
+        firm_response = client.post(
+            "/firms",
+            json={
+                "firm_id": "firm-1",
+                "name": "Firm One",
+            },
+        )
+        assert firm_response.status_code == 200
+
+        start_response = client.get("/auth/clio/start", params={"firm_id": "firm-1"})
+        assert start_response.status_code == 200
+        state = start_response.json()["state"]
+        assert "authorization_url" in start_response.json()
+
+        callback_response = client.get(
+            "/auth/clio/callback",
+            params={
+                "code": "auth-code",
+                "state": state,
+            },
+        )
+        assert callback_response.status_code == 200
+        assert callback_response.json()["connected"] is True
+        assert callback_response.json()["has_refresh_token"] is True
+
+        integrations_response = client.get("/firms/firm-1/integrations")
+        assert integrations_response.status_code == 200
+        assert integrations_response.json()[0]["provider"] == "clio"
+
+
 def test_sync_lookup_and_mapping_end_to_end(monkeypatch, tmp_path) -> None:
     sample_file = tmp_path / "filevine.json"
     sample_file.write_text(
@@ -130,7 +181,6 @@ def test_sync_endpoint_requires_requests_when_no_defaults(monkeypatch) -> None:
     asyncio.run(_reset_test_database())
     monkeypatch.setenv("DATABASE_URL", _test_database_url())
     monkeypatch.setenv("SCHEDULER_ENABLED", "false")
-    monkeypatch.delenv("CLIO_ACCESS_TOKEN", raising=False)
     monkeypatch.delenv("FILEVINE_SAMPLE_PATH", raising=False)
 
     app = create_app()
