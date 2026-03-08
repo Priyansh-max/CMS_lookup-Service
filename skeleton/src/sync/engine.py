@@ -92,16 +92,87 @@ class SyncEngine:
                 started_at=started_at,
                 completed_at=_utc_now(),
             )
+        try:
+            credentials = await self._refresh_credentials_if_needed(
+                provider=provider,
+                request=request,
+                credentials=credentials,
+            )
+        except ProviderError as exc:
+            return SyncResult(
+                firm_id=request.firm_id,
+                provider=request.provider,
+                records_fetched=0,
+                records_saved=0,
+                failed_records=0,
+                success=False,
+                error=str(exc),
+                started_at=started_at,
+                completed_at=_utc_now(),
+            )
 
         stored_state = await self.repository.get_sync_state(request.firm_id, request.provider)
         provider_sync_state = self._to_provider_sync_state(stored_state)
 
         try:
-            provider_result = await provider.sync_cases(
-                firm_id=request.firm_id,
+            provider_result = await self._sync_once(
+                provider=provider,
+                request=request,
                 credentials=credentials,
                 sync_state=provider_sync_state,
             )
+        except ProviderConfigurationError:
+            try:
+                retry_credentials = await self._refresh_credentials_after_rejection(
+                    provider=provider,
+                    request=request,
+                    credentials=credentials,
+                )
+            except ProviderError as exc:
+                return SyncResult(
+                    firm_id=request.firm_id,
+                    provider=request.provider,
+                    records_fetched=0,
+                    records_saved=0,
+                    failed_records=0,
+                    success=False,
+                    error=str(exc),
+                    started_at=started_at,
+                    completed_at=_utc_now(),
+                )
+            if retry_credentials is None:
+                return SyncResult(
+                    firm_id=request.firm_id,
+                    provider=request.provider,
+                    records_fetched=0,
+                    records_saved=0,
+                    failed_records=0,
+                    success=False,
+                    error=f"Provider rejected credentials for {request.firm_id}/{request.provider}",
+                    started_at=started_at,
+                    completed_at=_utc_now(),
+                )
+
+            try:
+                provider_result = await self._sync_once(
+                    provider=provider,
+                    request=request,
+                    credentials=retry_credentials,
+                    sync_state=provider_sync_state,
+                )
+                credentials = retry_credentials
+            except ProviderError as exc:
+                return SyncResult(
+                    firm_id=request.firm_id,
+                    provider=request.provider,
+                    records_fetched=0,
+                    records_saved=0,
+                    failed_records=0,
+                    success=False,
+                    error=str(exc),
+                    started_at=started_at,
+                    completed_at=_utc_now(),
+                )
         except ProviderError as exc:
             return SyncResult(
                 firm_id=request.firm_id,
@@ -204,6 +275,67 @@ class SyncEngine:
         if integration is None or not integration.is_active:
             return {}
         return dict(integration.provider_credentials)
+
+    async def _sync_once(
+        self,
+        *,
+        provider: CaseManagementProvider,
+        request: SyncRequest,
+        credentials: dict[str, Any],
+        sync_state: ProviderSyncState | None,
+    ):
+        return await provider.sync_cases(
+            firm_id=request.firm_id,
+            credentials=credentials,
+            sync_state=sync_state,
+        )
+
+    async def _refresh_credentials_if_needed(
+        self,
+        *,
+        provider: CaseManagementProvider,
+        request: SyncRequest,
+        credentials: dict[str, Any],
+    ) -> dict[str, Any]:
+        needs_refresh = getattr(provider, "credentials_need_refresh", None)
+        refresh = getattr(provider, "refresh_access_token", None)
+        if not callable(needs_refresh) or not callable(refresh):
+            return credentials
+        if not needs_refresh(credentials):
+            return credentials
+
+        refreshed_credentials = await refresh(credentials)
+        await self.repository.save_firm_integration(
+            FirmIntegrationRecord(
+                firm_id=request.firm_id,
+                provider=request.provider,
+                provider_credentials=refreshed_credentials,
+            )
+        )
+        return refreshed_credentials
+
+    async def _refresh_credentials_after_rejection(
+        self,
+        *,
+        provider: CaseManagementProvider,
+        request: SyncRequest,
+        credentials: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        refresh = getattr(provider, "refresh_access_token", None)
+        if not callable(refresh):
+            return None
+        if not credentials.get("refresh_token"):
+            return None
+
+        refreshed_credentials = await refresh(credentials)
+        await self.repository.save_firm_integration(
+            FirmIntegrationRecord(
+                firm_id=request.firm_id,
+                provider=request.provider,
+                provider_credentials=refreshed_credentials,
+            )
+        )
+        return refreshed_credentials
 
     def _to_provider_sync_state(
         self,

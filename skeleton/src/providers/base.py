@@ -60,3 +60,32 @@ class CaseManagementProvider(ABC):
         sync_state: ProviderSyncState | None = None,
     ) -> ProviderSyncResult:
         """Fetch raw case records using provider-specific sync semantics."""
+
+    def supports_oauth(self) -> bool:
+        """Whether this provider supports the generic OAuth bootstrap API."""
+
+        return False
+
+    def build_authorize_url(self, *, state: str) -> str:
+        """Return the provider authorization URL for the given state."""
+
+        raise ProviderConfigurationError(
+            f"Provider {self.provider_name} does not support OAuth bootstrap"
+        )
+
+    async def exchange_code_for_token(self, code: str) -> dict[str, Any]:
+        """Exchange an OAuth authorization code for provider tokens."""
+
+        raise ProviderConfigurationError(
+            f"Provider {self.provider_name} does not support OAuth bootstrap"
+        )
+
+    def build_integration_credentials(
+        self,
+        token_response: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Convert provider token response into stored integration credentials."""
+
+        raise ProviderConfigurationError(
+            f"Provider {self.provider_name} does not support OAuth bootstrap"
+        )

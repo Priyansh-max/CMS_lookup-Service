@@ -5,6 +5,7 @@ import os
 import sys
 from pathlib import Path
 from urllib.parse import quote
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -38,6 +39,7 @@ def print_usage() -> None:
         "Usage:\n"
         "  python skeleton/src/manual_testing/clio_auth.py authorize\n"
         "  python skeleton/src/manual_testing/clio_auth.py exchange <authorization_code>\n"
+        "  python skeleton/src/manual_testing/clio_auth.py refresh <refresh_token>\n"
     )
 
 
@@ -70,6 +72,45 @@ def exchange_code_for_token(code: str) -> dict:
     return response.json()
 
 
+def refresh_access_token(refresh_token: str) -> dict:
+    client_id = require_env("CLIO_CLIENT_ID")
+    client_secret = require_env("CLIO_CLIENT_SECRET")
+
+    response = httpx.post(
+        "https://app.clio.com/oauth/token",
+        data={
+            "grant_type": "refresh_token",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
+        },
+        headers={"Accept": "application/json"},
+        timeout=30.0,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def build_integration_credentials(token_response: dict, existing_refresh_token: str | None = None) -> dict:
+    expires_in = token_response.get("expires_in")
+    token_expires_at = None
+    if isinstance(expires_in, (int, float)):
+        token_expires_at = (
+            datetime.now(tz=timezone.utc) + timedelta(seconds=int(expires_in))
+        ).isoformat()
+
+    credentials = {
+        "access_token": token_response.get("access_token"),
+        "refresh_token": token_response.get("refresh_token") or existing_refresh_token,
+        "token_type": token_response.get("token_type", "Bearer"),
+    }
+    if "scope" in token_response:
+        credentials["scope"] = token_response["scope"]
+    if token_expires_at:
+        credentials["token_expires_at"] = token_expires_at
+    return credentials
+
+
 def main() -> None:
     load_dotenv(PROJECT_ROOT / ".env")
 
@@ -98,10 +139,21 @@ def main() -> None:
         print("Token response:\n")
         print(json.dumps(token_response, indent=2))
 
-        access_token = token_response.get("access_token")
-        if access_token:
-            print("\nUse this internally as:\n")
-            print(f"CLIO_ACCESS_TOKEN={access_token}")
+        print("\nUse this as the integration credentials payload:\n")
+        print(json.dumps(build_integration_credentials(token_response), indent=2))
+        return
+
+    if command == "refresh":
+        if len(sys.argv) < 3:
+            print("Missing refresh token.\n")
+            print_usage()
+            sys.exit(1)
+
+        token_response = refresh_access_token(sys.argv[2])
+        print("Refresh response:\n")
+        print(json.dumps(token_response, indent=2))
+        print("\nUpdated integration credentials:\n")
+        print(json.dumps(build_integration_credentials(token_response, sys.argv[2]), indent=2))
         return
 
     print(f"Unknown command: {command}\n")

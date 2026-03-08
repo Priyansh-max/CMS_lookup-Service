@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 import os
+from urllib.parse import unquote
 from typing import Any
 
 import uvicorn
@@ -12,7 +14,13 @@ from pydantic import BaseModel, Field
 
 from src.api.case_lookup import CaseLookupService
 from src.models.canonical import FieldMappingRecord, FirmIntegrationRecord, FirmRecord
-from src.providers import ClioProvider, FilevineProvider
+from src.providers import (
+    ClioProvider,
+    FilevineProvider,
+    ProviderConfigurationError,
+    ProviderPayloadError,
+    ProviderTemporaryError,
+)
 from src.storage import CaseRepositoryImpl
 from src.sync import SyncEngine, SyncRequest, SyncScheduler
 from src.transformers import ClioTransformer, FilevineTransformer
@@ -66,20 +74,25 @@ class MappingPayload(BaseModel):
     mappings: dict[str, list[str]]
 
 
+def _encode_auth_state(*, firm_id: str, provider: str) -> str:
+    return json.dumps({"firm_id": firm_id, "provider": provider})
+
+
+def _decode_auth_state(raw_state: str) -> dict[str, str]:
+    try:
+        payload = json.loads(unquote(raw_state))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state") from exc
+
+    firm_id = payload.get("firm_id")
+    provider = payload.get("provider")
+    if not isinstance(firm_id, str) or not isinstance(provider, str):
+        raise HTTPException(status_code=400, detail="Invalid OAuth state")
+    return {"firm_id": firm_id, "provider": provider}
+
+
 def build_default_sync_requests() -> list[SyncRequest]:
     requests: list[SyncRequest] = []
-
-    clio_access_token = os.getenv("CLIO_ACCESS_TOKEN")
-    clio_firm_id = os.getenv("CLIO_FIRM_ID", "firm-clio")
-    if clio_access_token:
-        requests.append(
-            SyncRequest(
-                firm_id=clio_firm_id,
-                provider="clio",
-                credentials={"access_token": clio_access_token},
-                firm_name=clio_firm_id,
-            )
-        )
 
     filevine_sample_path = os.getenv("FILEVINE_SAMPLE_PATH")
     filevine_firm_id = os.getenv("FILEVINE_FIRM_ID", "firm-filevine")
@@ -105,7 +118,20 @@ def create_app() -> FastAPI:
     repository = CaseRepositoryImpl(database_url)
     providers = {
         "clio": ClioProvider(
-            api_base_url=os.getenv("CLIO_API_BASE_URL", "https://app.clio.com/api/v4")
+            api_base_url=os.getenv("CLIO_API_BASE_URL", "https://app.clio.com/api/v4"),
+            oauth_authorize_url=os.getenv(
+                "CLIO_AUTH_URL",
+                "https://app.clio.com/oauth/authorize",
+            ),
+            oauth_token_url=os.getenv("CLIO_TOKEN_URL", "https://app.clio.com/oauth/token"),
+            client_id=os.getenv("CLIO_CLIENT_ID"),
+            client_secret=os.getenv("CLIO_CLIENT_SECRET"),
+            redirect_uri=os.getenv("CLIO_REDIRECT_URI"),
+            scopes=[
+                scope.strip()
+                for scope in os.getenv("CLIO_SCOPES", "").split(",")
+                if scope.strip()
+            ],
         ),
         "filevine": FilevineProvider(
             default_sample_path=os.getenv("FILEVINE_SAMPLE_PATH")
@@ -153,6 +179,76 @@ def create_app() -> FastAPI:
             "status": "ok",
             "scheduler_enabled": scheduler_enabled,
             "configured_sync_requests": len(scheduler.requests),
+        }
+
+    @app.get("/auth/{provider}/start")
+    async def auth_start(provider: str, firm_id: str) -> dict[str, Any]:
+        firm = await repository.get_firm(firm_id)
+        if firm is None:
+            raise HTTPException(status_code=404, detail=f"Unknown firm_id: {firm_id}")
+
+        provider_client = providers.get(provider)
+        if provider_client is None:
+            raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
+        if not provider_client.supports_oauth():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Provider {provider} does not support OAuth bootstrap",
+            )
+
+        state = _encode_auth_state(firm_id=firm_id, provider=provider)
+        try:
+            authorization_url = provider_client.build_authorize_url(state=state)
+        except ProviderConfigurationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        return {
+            "firm_id": firm_id,
+            "provider": provider,
+            "authorization_url": authorization_url,
+            "state": state,
+        }
+
+    @app.get("/auth/{provider}/callback")
+    async def auth_callback(provider: str, code: str, state: str) -> dict[str, Any]:
+        payload = _decode_auth_state(state)
+        if payload["provider"] != provider:
+            raise HTTPException(status_code=400, detail="OAuth state/provider mismatch")
+
+        firm = await repository.get_firm(payload["firm_id"])
+        if firm is None:
+            raise HTTPException(status_code=404, detail=f"Unknown firm_id: {payload['firm_id']}")
+
+        provider_client = providers.get(provider)
+        if provider_client is None:
+            raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
+        if not provider_client.supports_oauth():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Provider {provider} does not support OAuth bootstrap",
+            )
+
+        try:
+            token_response = await provider_client.exchange_code_for_token(code)
+            integration_credentials = provider_client.build_integration_credentials(token_response)
+        except (ProviderConfigurationError, ProviderPayloadError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except ProviderTemporaryError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        await repository.save_firm_integration(
+            FirmIntegrationRecord(
+                firm_id=payload["firm_id"],
+                provider=provider,
+                provider_credentials=integration_credentials,
+            )
+        )
+        return {
+            "firm_id": payload["firm_id"],
+            "provider": provider,
+            "connected": True,
+            "has_refresh_token": bool(integration_credentials.get("refresh_token")),
+            "token_expires_at": integration_credentials.get("token_expires_at"),
         }
 
     @app.get("/firms")
