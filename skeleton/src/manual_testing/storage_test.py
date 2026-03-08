@@ -1,4 +1,5 @@
 import asyncio
+import os
 import sys
 from pathlib import Path
 from datetime import datetime, timezone
@@ -11,15 +12,27 @@ from src.models.canonical import (
     CaseRecord,
     CaseSearchQuery,
     FieldMappingRecord,
+    FirmRecord,
     StoredSyncState,
 )
 from src.storage.repository import CaseRepositoryImpl
 
 
 async def main():
-    db_path = PROJECT_ROOT / "manual_testing.db"
-    repo = CaseRepositoryImpl(f"sqlite+aiosqlite:///{db_path}")
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        raise ValueError("DATABASE_URL is not set")
+
+    repo = CaseRepositoryImpl(database_url)
     await repo.initialize()
+
+    await repo.save_firm(
+        FirmRecord(
+            firm_id="firm-1",
+            name="Manual Test Firm",
+            provider="filevine",
+        )
+    )
 
     case = CaseRecord(
         firm_id="firm-1",

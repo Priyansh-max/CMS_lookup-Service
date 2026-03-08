@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from src.models.canonical import StoredSyncState, SyncResult
+from src.models.canonical import FirmRecord, StoredSyncState, SyncResult
 from src.providers.base import (
     CaseManagementProvider,
     ProviderError,
@@ -26,6 +26,7 @@ class SyncRequest:
     firm_id: str
     provider: str
     credentials: dict[str, object]
+    firm_name: str | None = None
 
 
 class SyncEngine:
@@ -59,6 +60,15 @@ class SyncEngine:
                 started_at=started_at,
                 completed_at=_utc_now(),
             )
+
+        await self.repository.save_firm(
+            FirmRecord(
+                firm_id=request.firm_id,
+                name=request.firm_name or request.firm_id,
+                provider=request.provider,
+                provider_credentials=dict(request.credentials),
+            )
+        )
 
         stored_state = await self.repository.get_sync_state(request.firm_id, request.provider)
         provider_sync_state = self._to_provider_sync_state(stored_state)

@@ -10,6 +10,7 @@ from src.models.canonical import (
     CaseRecord,
     CaseSearchQuery,
     FieldMappingRecord,
+    FirmRecord,
     StoredSyncState,
 )
 from src.storage.base import CaseRepository
@@ -17,16 +18,19 @@ from src.storage.database import (
     Base,
     CaseTable,
     FieldMappingTable,
+    FirmTable,
     SyncStateTable,
     create_engine_and_sessionmaker,
 )
 
 
-def _to_case_record(row: CaseTable) -> CaseRecord:
-    updated_at = row.updated_at
-    if updated_at is not None and updated_at.tzinfo is None:
-        updated_at = updated_at.replace(tzinfo=timezone.utc)
+def _ensure_utc(value):
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
 
+
+def _to_case_record(row: CaseTable) -> CaseRecord:
     return CaseRecord(
         firm_id=row.firm_id,
         provider=row.provider,
@@ -36,8 +40,20 @@ def _to_case_record(row: CaseTable) -> CaseRecord:
         client_email=row.client_email,
         case_status=row.case_status,
         assigned_staff=row.assigned_staff,
-        updated_at=updated_at,
+        updated_at=_ensure_utc(row.updated_at),
         raw_payload=row.raw_payload or {},
+    )
+
+
+def _to_firm_record(row: FirmTable) -> FirmRecord:
+    return FirmRecord(
+        firm_id=row.id,
+        name=row.name,
+        provider=row.provider,
+        provider_credentials=row.provider_credentials or {},
+        is_active=row.is_active,
+        created_at=_ensure_utc(row.created_at),
+        updated_at=_ensure_utc(row.updated_at),
     )
 
 
@@ -54,6 +70,43 @@ class CaseRepositoryImpl(CaseRepository):
     async def initialize(self) -> None:
         async with self.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
+
+    async def save_firm(self, firm: FirmRecord) -> None:
+        async with self.session_factory() as session:
+            result = await session.execute(select(FirmTable).where(FirmTable.id == firm.firm_id))
+            existing = result.scalar_one_or_none()
+
+            if existing is None:
+                session.add(
+                    FirmTable(
+                        id=firm.firm_id,
+                        name=firm.name,
+                        provider=firm.provider,
+                        provider_credentials=firm.provider_credentials,
+                        is_active=firm.is_active,
+                    )
+                )
+            else:
+                existing.name = firm.name
+                existing.provider = firm.provider
+                existing.provider_credentials = firm.provider_credentials
+                existing.is_active = firm.is_active
+
+            await session.commit()
+
+    async def get_firm(self, firm_id: str) -> FirmRecord | None:
+        async with self.session_factory() as session:
+            result = await session.execute(select(FirmTable).where(FirmTable.id == firm_id))
+            row = result.scalar_one_or_none()
+            if row is None:
+                return None
+            return _to_firm_record(row)
+
+    async def list_firms(self) -> list[FirmRecord]:
+        async with self.session_factory() as session:
+            result = await session.execute(select(FirmTable).order_by(FirmTable.id))
+            rows = result.scalars().all()
+            return [_to_firm_record(row) for row in rows]
 
     async def save_case(self, case: CaseRecord) -> None:
         await self.save_cases([case])
@@ -158,13 +211,10 @@ class CaseRepositoryImpl(CaseRepository):
             row = result.scalar_one_or_none()
             if row is None:
                 return None
-            since = row.since
-            if since is not None and since.tzinfo is None:
-                since = since.replace(tzinfo=timezone.utc)
             return StoredSyncState(
                 firm_id=row.firm_id,
                 provider=row.provider,
-                since=since,
+                since=_ensure_utc(row.since),
                 cursor=row.cursor,
                 page_token=row.page_token,
                 metadata=row.state_metadata or {},

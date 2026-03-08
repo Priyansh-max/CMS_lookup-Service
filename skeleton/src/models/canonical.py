@@ -45,6 +45,19 @@ class CaseSearchQuery:
 
 
 @dataclass(slots=True)
+class FirmRecord:
+    """Tenant-level firm configuration."""
+
+    firm_id: str
+    name: str
+    provider: str
+    provider_credentials: dict[str, Any] = field(default_factory=dict)
+    is_active: bool = True
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(slots=True)
 class StoredSyncState:
     """Provider-aware sync state stored by the repository."""
 

@@ -1,4 +1,5 @@
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -13,10 +14,13 @@ from src.transformers.filevine_transformer import FilevineTransformer
 
 
 async def main():
-    db_path = PROJECT_ROOT / "manual_sync.db"
+    database_url = os.getenv(os.getenv("DATABASE_URL"))
+    if not database_url:
+        raise ValueError("DATABASE_URL is not set")
+
     sample_path = Path(__file__).with_name("filevine_sample.json")
 
-    repo = CaseRepositoryImpl(f"sqlite+aiosqlite:///{db_path}")
+    repo = CaseRepositoryImpl(database_url)
     await repo.initialize()
 
     engine = SyncEngine(
