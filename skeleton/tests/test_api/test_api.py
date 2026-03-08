@@ -39,7 +39,7 @@ def test_health_endpoint(monkeypatch) -> None:
     assert response.json()["status"] == "ok"
 
 
-def test_auth_start_and_callback_for_clio(monkeypatch) -> None:
+def test_clio_bootstrap_generates_auth_url_and_saves_tokens(monkeypatch) -> None:
     asyncio.run(_reset_test_database())
     monkeypatch.setenv("DATABASE_URL", _test_database_url())
     monkeypatch.setenv("SCHEDULER_ENABLED", "false")
@@ -69,25 +69,63 @@ def test_auth_start_and_callback_for_clio(monkeypatch) -> None:
         )
         assert firm_response.status_code == 200
 
-        start_response = client.get("/auth/clio/start", params={"firm_id": "firm-1"})
-        assert start_response.status_code == 200
-        state = start_response.json()["state"]
-        assert "authorization_url" in start_response.json()
-
-        callback_response = client.get(
-            "/auth/clio/callback",
-            params={
-                "code": "auth-code",
-                "state": state,
+        start_response = client.post(
+            "/auth/clio/bootstrap",
+            json={
+                "firm_id": "firm-1",
             },
         )
-        assert callback_response.status_code == 200
-        assert callback_response.json()["connected"] is True
-        assert callback_response.json()["has_refresh_token"] is True
+        assert start_response.status_code == 200
+        assert "authorization_url" in start_response.json()
+        assert start_response.json()["bootstrapped"] is False
+
+        bootstrap_response = client.post(
+            "/auth/clio/bootstrap",
+            json={
+                "firm_id": "firm-1",
+                "code": "auth-code",
+            },
+        )
+        assert bootstrap_response.status_code == 200
+        assert bootstrap_response.json()["bootstrapped"] is True
+        assert bootstrap_response.json()["has_refresh_token"] is True
 
         integrations_response = client.get("/firms/firm-1/integrations")
         assert integrations_response.status_code == 200
         assert integrations_response.json()[0]["provider"] == "clio"
+
+
+def test_filevine_bootstrap_stores_pat(monkeypatch) -> None:
+    asyncio.run(_reset_test_database())
+    monkeypatch.setenv("DATABASE_URL", _test_database_url())
+    monkeypatch.setenv("SCHEDULER_ENABLED", "false")
+    monkeypatch.setenv("FILEVINE_CLIENT_ID", "filevine-client-id")
+    monkeypatch.setenv("FILEVINE_CLIENT_SECRET", "filevine-client-secret")
+
+    app = create_app()
+    with TestClient(app) as client:
+        firm_response = client.post(
+            "/firms",
+            json={
+                "firm_id": "firm-1",
+                "name": "Firm One",
+            },
+        )
+        assert firm_response.status_code == 200
+
+        bootstrap_response = client.post(
+            "/auth/filevine/bootstrap",
+            json={
+                "firm_id": "firm-1",
+                "pat": "filevine-pat",
+            },
+        )
+        assert bootstrap_response.status_code == 200
+        assert bootstrap_response.json()["bootstrapped"] is True
+
+        integrations_response = client.get("/firms/firm-1/integrations")
+        assert integrations_response.status_code == 200
+        assert integrations_response.json()[0]["provider"] == "filevine"
 
 
 def test_sync_lookup_and_mapping_end_to_end(monkeypatch, tmp_path) -> None:

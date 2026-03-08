@@ -29,9 +29,13 @@ class FilevineProvider(CaseManagementProvider):
         identity_url: str = "https://identity.filevine.com/connect/token",
         org_lookup_url: str = "https://api.filevineapp.com/fv-app/v2/utils/GetUserOrgsWithToken",
         projects_url: str = "https://api.filevineapp.com/fv-app/v2/Projects",
-        client_id: str | None = None,
-        client_secret: str | None = None,
-        scopes: str = "fv.api.gateway.access tenant filevine.v2.api.* openid email fv.auth.tenant.read",
+        client_id: str = os.getenv("FILEVINE_CLIENT_ID"),
+        client_secret: str = os.getenv("FILEVINE_CLIENT_SECRET"),
+        scopes: list[str] = [
+            scope.strip()
+            for scope in os.getenv("FILEVINE_SCOPES", "").split(",")
+            if scope.strip()
+        ],
         user_agent: str = "firm-cms-integration-service/1.0",
         timeout_seconds: float = 20.0,
         access_token_buffer_seconds: int = 60,

@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import json
 from contextlib import asynccontextmanager
 import os
-from urllib.parse import unquote
 from typing import Any
 
 import uvicorn
@@ -65,6 +63,18 @@ class FirmIntegrationPayload(BaseModel):
     is_active: bool = True
 
 
+class ClioBootstrapPayload(BaseModel):
+    firm_id: str
+    code: str | None = None
+    is_active: bool = True
+
+
+class FilevineBootstrapPayload(BaseModel):
+    firm_id: str
+    pat: str
+    is_active: bool = True
+
+
 class SyncBatchPayload(BaseModel):
     requests: list[SyncRequestPayload]
 
@@ -74,21 +84,42 @@ class MappingPayload(BaseModel):
     mappings: dict[str, list[str]]
 
 
-def _encode_auth_state(*, firm_id: str, provider: str) -> str:
-    return json.dumps({"firm_id": firm_id, "provider": provider})
+async def _bootstrap_clio_integration(
+    *,
+    repository: CaseRepositoryImpl,
+    provider_client: ClioProvider,
+    firm_id: str,
+    code: str,
+    is_active: bool = True,
+) -> dict[str, Any]:
+    firm = await repository.get_firm(firm_id)
+    if firm is None:
+        raise HTTPException(status_code=404, detail=f"Unknown firm_id: {firm_id}")
 
-
-def _decode_auth_state(raw_state: str) -> dict[str, str]:
     try:
-        payload = json.loads(unquote(raw_state))
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail="Invalid OAuth state") from exc
+        token_response = await provider_client.exchange_code_for_token(code)
+        integration_credentials = provider_client.build_integration_credentials(token_response)
+    except (ProviderConfigurationError, ProviderPayloadError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ProviderTemporaryError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    firm_id = payload.get("firm_id")
-    provider = payload.get("provider")
-    if not isinstance(firm_id, str) or not isinstance(provider, str):
-        raise HTTPException(status_code=400, detail="Invalid OAuth state")
-    return {"firm_id": firm_id, "provider": provider}
+    await repository.save_firm_integration(
+        FirmIntegrationRecord(
+            firm_id=firm_id,
+            provider="clio",
+            provider_credentials=integration_credentials,
+            is_active=is_active,
+        )
+    )
+    return {
+        "firm_id": firm_id,
+        "provider": "clio",
+        "bootstrapped": True,
+        "has_refresh_token": bool(integration_credentials.get("refresh_token")),
+        "token_expires_at": integration_credentials.get("token_expires_at"),
+        "is_active": is_active,
+    }
 
 
 def build_default_sync_requests() -> list[SyncRequest]:
@@ -204,74 +235,59 @@ def create_app() -> FastAPI:
             "configured_sync_requests": len(scheduler.requests),
         }
 
-    @app.get("/auth/{provider}/start")
-    async def auth_start(provider: str, firm_id: str) -> dict[str, Any]:
-        firm = await repository.get_firm(firm_id)
+    @app.post("/auth/clio/bootstrap")
+    async def clio_bootstrap(payload: ClioBootstrapPayload) -> dict[str, Any]:
+        firm = await repository.get_firm(payload.firm_id)
         if firm is None:
-            raise HTTPException(status_code=404, detail=f"Unknown firm_id: {firm_id}")
+            raise HTTPException(status_code=404, detail=f"Unknown firm_id: {payload.firm_id}")
 
-        provider_client = providers.get(provider)
-        if provider_client is None:
-            raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
-        if not provider_client.supports_oauth():
+        if payload.code is None:
+            try:
+                authorization_url = providers["clio"].build_authorize_url(state=payload.firm_id)
+            except ProviderConfigurationError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+            return {
+                "firm_id": payload.firm_id,
+                "provider": "clio",
+                "authorization_url": authorization_url,
+                "bootstrapped": False,
+            }
+
+        return await _bootstrap_clio_integration(
+            repository=repository,
+            provider_client=providers["clio"],
+            firm_id=payload.firm_id,
+            code=payload.code,
+            is_active=payload.is_active,
+        )
+
+    @app.post("/auth/filevine/bootstrap")
+    async def filevine_bootstrap(payload: FilevineBootstrapPayload) -> dict[str, Any]:
+        firm = await repository.get_firm(payload.firm_id)
+        if firm is None:
+            raise HTTPException(status_code=404, detail=f"Unknown firm_id: {payload.firm_id}")
+
+        if not providers["filevine"].client_id or not providers["filevine"].client_secret:
             raise HTTPException(
                 status_code=400,
-                detail=f"Provider {provider} does not support OAuth bootstrap",
+                detail="Missing Filevine client credentials in app configuration",
             )
-
-        state = _encode_auth_state(firm_id=firm_id, provider=provider)
-        try:
-            authorization_url = provider_client.build_authorize_url(state=state)
-        except ProviderConfigurationError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        return {
-            "firm_id": firm_id,
-            "provider": provider,
-            "authorization_url": authorization_url,
-            "state": state,
-        }
-
-    @app.get("/auth/{provider}/callback")
-    async def auth_callback(provider: str, code: str, state: str) -> dict[str, Any]:
-        payload = _decode_auth_state(state)
-        if payload["provider"] != provider:
-            raise HTTPException(status_code=400, detail="OAuth state/provider mismatch")
-
-        firm = await repository.get_firm(payload["firm_id"])
-        if firm is None:
-            raise HTTPException(status_code=404, detail=f"Unknown firm_id: {payload['firm_id']}")
-
-        provider_client = providers.get(provider)
-        if provider_client is None:
-            raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
-        if not provider_client.supports_oauth():
-            raise HTTPException(
-                status_code=400,
-                detail=f"Provider {provider} does not support OAuth bootstrap",
-            )
-
-        try:
-            token_response = await provider_client.exchange_code_for_token(code)
-            integration_credentials = provider_client.build_integration_credentials(token_response)
-        except (ProviderConfigurationError, ProviderPayloadError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except ProviderTemporaryError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
         await repository.save_firm_integration(
             FirmIntegrationRecord(
-                firm_id=payload["firm_id"],
-                provider=provider,
-                provider_credentials=integration_credentials,
+                firm_id=payload.firm_id,
+                provider="filevine",
+                provider_credentials={"pat": payload.pat},
+                is_active=payload.is_active,
             )
         )
         return {
-            "firm_id": payload["firm_id"],
-            "provider": provider,
-            "connected": True,
-            "has_refresh_token": bool(integration_credentials.get("refresh_token")),
-            "token_expires_at": integration_credentials.get("token_expires_at"),
+            "firm_id": payload.firm_id,
+            "provider": "filevine",
+            "bootstrapped": True,
+            "stored_credentials": ["pat"],
+            "is_active": payload.is_active,
         }
 
     @app.get("/firms")

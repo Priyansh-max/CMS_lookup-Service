@@ -25,12 +25,16 @@ class ClioProvider(CaseManagementProvider):
         self,
         *,
         api_base_url: str = "https://app.clio.com/api/v4",
-        oauth_authorize_url: str = os.getenv("CLIO_AUTH_URL"),
-        oauth_token_url: str = os.getenv("CLIO_TOKEN_URL"),
-        client_id: str | None = None,
-        client_secret: str | None = None,
-        redirect_uri: str | None = None,
-        scopes: list[str] | None = None,
+        oauth_authorize_url: str = "https://app.clio.com/oauth/authorize",
+        oauth_token_url: str = "https://app.clio.com/oauth/token",
+        client_id: str = os.getenv("CLIO_CLIENT_ID"),
+        client_secret: str = os.getenv("CLIO_CLIENT_SECRET"),
+        redirect_uri: str = os.getenv("CLIO_REDIRECT_URI"),
+        scopes: list[str] = [
+            scope.strip()
+            for scope in os.getenv("CLIO_SCOPES", "").split(",")
+            if scope.strip()
+        ],
         timeout_seconds: float = 15.0,
         refresh_buffer_seconds: int = 60,
     ):
