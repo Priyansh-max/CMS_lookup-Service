@@ -12,6 +12,7 @@ from src.models.canonical import (
     CaseRecord,
     CaseSearchQuery,
     FieldMappingRecord,
+    FirmIntegrationRecord,
     FirmRecord,
     StoredSyncState,
 )
@@ -30,7 +31,13 @@ async def main():
         FirmRecord(
             firm_id="firm-1",
             name="Manual Test Firm",
+        )
+    )
+    await repo.save_firm_integration(
+        FirmIntegrationRecord(
+            firm_id="firm-1",
             provider="filevine",
+            provider_credentials={"sample_path": "manual-filevine-sample.json"},
         )
     )
 
@@ -88,6 +95,10 @@ async def main():
         CaseSearchQuery(firm_id="firm-1", name="jon smyth")
     )
     print(candidates)
+
+    print("\n--- Listing integrations ---")
+    integrations = await repo.list_firm_integrations("firm-1")
+    print(integrations)
 
     await repo.close()
 

@@ -46,11 +46,22 @@ class CaseSearchQuery:
 
 @dataclass(slots=True)
 class FirmRecord:
-    """Tenant-level firm configuration."""
+    """Tenant-level firm record."""
 
     firm_id: str
     name: str
-    provider: str
+    is_active: bool = True
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class FirmIntegrationRecord:
+    """Provider-specific integration configuration for one firm."""
+
+    integration_id: int | None = None
+    firm_id: str = ""
+    provider: str = ""
     provider_credentials: dict[str, Any] = field(default_factory=dict)
     is_active: bool = True
     created_at: datetime | None = None

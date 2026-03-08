@@ -6,6 +6,7 @@ from src.models.canonical import (
     CaseRecord,
     CaseSearchQuery,
     FieldMappingRecord,
+    FirmIntegrationRecord,
     FirmRecord,
     StoredSyncState,
 )
@@ -27,6 +28,22 @@ class CaseRepository(ABC):
     @abstractmethod
     async def list_firms(self) -> list[FirmRecord]:
         """Return all saved firms."""
+
+    @abstractmethod
+    async def save_firm_integration(self, integration: FirmIntegrationRecord) -> None:
+        """Insert or update one provider integration for a firm."""
+
+    @abstractmethod
+    async def get_firm_integration(
+        self,
+        firm_id: str,
+        provider: str,
+    ) -> FirmIntegrationRecord | None:
+        """Load one provider integration for a firm."""
+
+    @abstractmethod
+    async def list_firm_integrations(self, firm_id: str) -> list[FirmIntegrationRecord]:
+        """Return all provider integrations configured for one firm."""
 
     @abstractmethod
     async def save_case(self, case: CaseRecord) -> None:

@@ -20,6 +20,30 @@ class FirmTable(Base):
 
     id: Mapped[str] = mapped_column(String(100), primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class FirmIntegrationTable(Base):
+    """Provider-specific connection details for one firm."""
+
+    __tablename__ = "firm_integrations"
+    __table_args__ = (
+        UniqueConstraint("firm_id", "provider", name="uq_firm_integration_provider"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    firm_id: Mapped[str] = mapped_column(ForeignKey("firms.id"), index=True)
     provider: Mapped[str] = mapped_column(String(50), index=True)
     provider_credentials: Mapped[dict] = mapped_column(JSON, default=dict)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)

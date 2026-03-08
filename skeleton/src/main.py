@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from src.api.case_lookup import CaseLookupService
-from src.models.canonical import FieldMappingRecord, FirmRecord
+from src.models.canonical import FieldMappingRecord, FirmIntegrationRecord, FirmRecord
 from src.providers import ClioProvider, FilevineProvider
 from src.storage import CaseRepositoryImpl
 from src.sync import SyncEngine, SyncRequest, SyncScheduler
@@ -48,6 +48,10 @@ class SyncRequestPayload(BaseModel):
 class FirmPayload(BaseModel):
     firm_id: str
     name: str
+    is_active: bool = True
+
+
+class FirmIntegrationPayload(BaseModel):
     provider: str
     provider_credentials: dict[str, Any] = Field(default_factory=dict)
     is_active: bool = True
@@ -158,8 +162,6 @@ def create_app() -> FastAPI:
             {
                 "firm_id": firm.firm_id,
                 "name": firm.name,
-                "provider": firm.provider,
-                "provider_credentials": firm.provider_credentials,
                 "is_active": firm.is_active,
             }
             for firm in firms
@@ -171,14 +173,52 @@ def create_app() -> FastAPI:
             FirmRecord(
                 firm_id=payload.firm_id,
                 name=payload.name,
-                provider=payload.provider,
-                provider_credentials=payload.provider_credentials,
                 is_active=payload.is_active,
             )
         )
         return {
             "firm_id": payload.firm_id,
             "name": payload.name,
+            "is_active": payload.is_active,
+        }
+
+    @app.get("/firms/{firm_id}/integrations")
+    async def list_integrations(firm_id: str) -> list[dict[str, Any]]:
+        firm = await repository.get_firm(firm_id)
+        if firm is None:
+            raise HTTPException(status_code=404, detail=f"Unknown firm_id: {firm_id}")
+
+        integrations = await repository.list_firm_integrations(firm_id)
+        return [
+            {
+                "integration_id": integration.integration_id,
+                "firm_id": integration.firm_id,
+                "provider": integration.provider,
+                "has_credentials": bool(integration.provider_credentials),
+                "is_active": integration.is_active,
+            }
+            for integration in integrations
+        ]
+
+    @app.post("/firms/{firm_id}/integrations")
+    async def save_integration(
+        firm_id: str,
+        payload: FirmIntegrationPayload,
+    ) -> dict[str, Any]:
+        firm = await repository.get_firm(firm_id)
+        if firm is None:
+            raise HTTPException(status_code=404, detail=f"Unknown firm_id: {firm_id}")
+
+        await repository.save_firm_integration(
+            FirmIntegrationRecord(
+                firm_id=firm_id,
+                provider=payload.provider,
+                provider_credentials=payload.provider_credentials,
+                is_active=payload.is_active,
+            )
+        )
+        return {
+            "firm_id": firm_id,
             "provider": payload.provider,
             "is_active": payload.is_active,
         }
@@ -211,7 +251,7 @@ def create_app() -> FastAPI:
                 SyncRequest(
                     firm_id=item.firm_id,
                     provider=item.provider,
-                    credentials=item.credentials,
+                    credentials=item.credentials or None,
                     firm_name=item.firm_name,
                 )
                 for item in payload.requests

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
-from src.models.canonical import FirmRecord, StoredSyncState, SyncResult
+from src.models.canonical import FirmIntegrationRecord, FirmRecord, StoredSyncState, SyncResult
 from src.providers.base import (
     CaseManagementProvider,
     ProviderError,
@@ -25,7 +26,7 @@ class SyncRequest:
 
     firm_id: str
     provider: str
-    credentials: dict[str, object]
+    credentials: dict[str, Any] | None = None
     firm_name: str | None = None
 
 
@@ -61,14 +62,36 @@ class SyncEngine:
                 completed_at=_utc_now(),
             )
 
-        await self.repository.save_firm(
-            FirmRecord(
-                firm_id=request.firm_id,
-                name=request.firm_name or request.firm_id,
-                provider=request.provider,
-                provider_credentials=dict(request.credentials),
+        existing_firm = await self.repository.get_firm(request.firm_id)
+        if existing_firm is None:
+            await self.repository.save_firm(
+                FirmRecord(
+                    firm_id=request.firm_id,
+                    name=request.firm_name or request.firm_id,
+                )
             )
-        )
+        elif request.firm_name and existing_firm.name != request.firm_name:
+            await self.repository.save_firm(
+                FirmRecord(
+                    firm_id=existing_firm.firm_id,
+                    name=request.firm_name,
+                    is_active=existing_firm.is_active,
+                )
+            )
+
+        credentials = await self._resolve_credentials(request)
+        if not credentials:
+            return SyncResult(
+                firm_id=request.firm_id,
+                provider=request.provider,
+                records_fetched=0,
+                records_saved=0,
+                failed_records=0,
+                success=False,
+                error=f"Missing active integration credentials for {request.firm_id}/{request.provider}",
+                started_at=started_at,
+                completed_at=_utc_now(),
+            )
 
         stored_state = await self.repository.get_sync_state(request.firm_id, request.provider)
         provider_sync_state = self._to_provider_sync_state(stored_state)
@@ -76,7 +99,7 @@ class SyncEngine:
         try:
             provider_result = await provider.sync_cases(
                 firm_id=request.firm_id,
-                credentials=request.credentials,
+                credentials=credentials,
                 sync_state=provider_sync_state,
             )
         except ProviderError as exc:
@@ -164,6 +187,23 @@ class SyncEngine:
         for request in requests:
             results.append(await self.sync_provider(request))
         return results
+
+    async def _resolve_credentials(self, request: SyncRequest) -> dict[str, Any]:
+        if request.credentials:
+            credentials = dict(request.credentials)
+            await self.repository.save_firm_integration(
+                FirmIntegrationRecord(
+                    firm_id=request.firm_id,
+                    provider=request.provider,
+                    provider_credentials=credentials,
+                )
+            )
+            return credentials
+
+        integration = await self.repository.get_firm_integration(request.firm_id, request.provider)
+        if integration is None or not integration.is_active:
+            return {}
+        return dict(integration.provider_credentials)
 
     def _to_provider_sync_state(
         self,

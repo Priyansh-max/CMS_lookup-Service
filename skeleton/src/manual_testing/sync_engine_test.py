@@ -14,7 +14,7 @@ from src.transformers.filevine_transformer import FilevineTransformer
 
 
 async def main():
-    database_url = os.getenv(os.getenv("DATABASE_URL"))
+    database_url = os.getenv("DATABASE_URL")
     if not database_url:
         raise ValueError("DATABASE_URL is not set")
 

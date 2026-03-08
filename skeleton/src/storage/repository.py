@@ -10,6 +10,7 @@ from src.models.canonical import (
     CaseRecord,
     CaseSearchQuery,
     FieldMappingRecord,
+    FirmIntegrationRecord,
     FirmRecord,
     StoredSyncState,
 )
@@ -18,6 +19,7 @@ from src.storage.database import (
     Base,
     CaseTable,
     FieldMappingTable,
+    FirmIntegrationTable,
     FirmTable,
     SyncStateTable,
     create_engine_and_sessionmaker,
@@ -49,6 +51,16 @@ def _to_firm_record(row: FirmTable) -> FirmRecord:
     return FirmRecord(
         firm_id=row.id,
         name=row.name,
+        is_active=row.is_active,
+        created_at=_ensure_utc(row.created_at),
+        updated_at=_ensure_utc(row.updated_at),
+    )
+
+
+def _to_firm_integration_record(row: FirmIntegrationTable) -> FirmIntegrationRecord:
+    return FirmIntegrationRecord(
+        integration_id=row.id,
+        firm_id=row.firm_id,
         provider=row.provider,
         provider_credentials=row.provider_credentials or {},
         is_active=row.is_active,
@@ -81,15 +93,11 @@ class CaseRepositoryImpl(CaseRepository):
                     FirmTable(
                         id=firm.firm_id,
                         name=firm.name,
-                        provider=firm.provider,
-                        provider_credentials=firm.provider_credentials,
                         is_active=firm.is_active,
                     )
                 )
             else:
                 existing.name = firm.name
-                existing.provider = firm.provider
-                existing.provider_credentials = firm.provider_credentials
                 existing.is_active = firm.is_active
 
             await session.commit()
@@ -107,6 +115,58 @@ class CaseRepositoryImpl(CaseRepository):
             result = await session.execute(select(FirmTable).order_by(FirmTable.id))
             rows = result.scalars().all()
             return [_to_firm_record(row) for row in rows]
+
+    async def save_firm_integration(self, integration: FirmIntegrationRecord) -> None:
+        async with self.session_factory() as session:
+            result = await session.execute(
+                select(FirmIntegrationTable).where(
+                    FirmIntegrationTable.firm_id == integration.firm_id,
+                    FirmIntegrationTable.provider == integration.provider,
+                )
+            )
+            existing = result.scalar_one_or_none()
+
+            if existing is None:
+                session.add(
+                    FirmIntegrationTable(
+                        firm_id=integration.firm_id,
+                        provider=integration.provider,
+                        provider_credentials=integration.provider_credentials,
+                        is_active=integration.is_active,
+                    )
+                )
+            else:
+                existing.provider_credentials = integration.provider_credentials
+                existing.is_active = integration.is_active
+
+            await session.commit()
+
+    async def get_firm_integration(
+        self,
+        firm_id: str,
+        provider: str,
+    ) -> FirmIntegrationRecord | None:
+        async with self.session_factory() as session:
+            result = await session.execute(
+                select(FirmIntegrationTable).where(
+                    FirmIntegrationTable.firm_id == firm_id,
+                    FirmIntegrationTable.provider == provider,
+                )
+            )
+            row = result.scalar_one_or_none()
+            if row is None:
+                return None
+            return _to_firm_integration_record(row)
+
+    async def list_firm_integrations(self, firm_id: str) -> list[FirmIntegrationRecord]:
+        async with self.session_factory() as session:
+            result = await session.execute(
+                select(FirmIntegrationTable)
+                .where(FirmIntegrationTable.firm_id == firm_id)
+                .order_by(FirmIntegrationTable.provider)
+            )
+            rows = result.scalars().all()
+            return [_to_firm_integration_record(row) for row in rows]
 
     async def save_case(self, case: CaseRecord) -> None:
         await self.save_cases([case])
