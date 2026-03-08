@@ -3,9 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from datetime import datetime, timezone
 
-from src.models.canonical import StoredSyncState
 from src.providers.filevine import FilevineProvider
 from src.storage.database import Base
 from src.storage.repository import CaseRepositoryImpl
@@ -67,12 +65,15 @@ def test_sync_engine_runs_snapshot_provider_end_to_end(tmp_path) -> None:
     )
 
     stored = asyncio.run(repository.get_case_by_external_id("firm-1", "filevine", "project-1"))
+    integration = asyncio.run(repository.get_firm_integration("firm-1", "filevine"))
     sync_state = asyncio.run(repository.get_sync_state("firm-1", "filevine"))
 
     assert result.success is True
     assert result.records_fetched == 1
     assert result.records_saved == 1
     assert stored is not None
+    assert integration is not None
+    assert integration.provider_credentials["sample_path"] == str(sample_file)
     assert sync_state is not None
     assert sync_state.metadata["strategy"] == "snapshot"
 

@@ -70,6 +70,24 @@ def test_sync_lookup_and_mapping_end_to_end(monkeypatch, tmp_path) -> None:
 
     app = create_app()
     with TestClient(app) as client:
+        firm_response = client.post(
+            "/firms",
+            json={
+                "firm_id": "firm-1",
+                "name": "Firm One",
+            },
+        )
+        assert firm_response.status_code == 200
+
+        integration_response = client.post(
+            "/firms/firm-1/integrations",
+            json={
+                "provider": "filevine",
+                "provider_credentials": {"sample_path": str(sample_file)},
+            },
+        )
+        assert integration_response.status_code == 200
+
         sync_response = client.post(
             "/sync",
             json={
@@ -77,13 +95,16 @@ def test_sync_lookup_and_mapping_end_to_end(monkeypatch, tmp_path) -> None:
                     {
                         "firm_id": "firm-1",
                         "provider": "filevine",
-                        "credentials": {"sample_path": str(sample_file)},
                     }
                 ]
             },
         )
         assert sync_response.status_code == 200
         assert sync_response.json()[0]["records_saved"] == 1
+
+        integrations_response = client.get("/firms/firm-1/integrations")
+        assert integrations_response.status_code == 200
+        assert integrations_response.json()[0]["provider"] == "filevine"
 
         lookup_response = client.get(
             "/cases/lookup",

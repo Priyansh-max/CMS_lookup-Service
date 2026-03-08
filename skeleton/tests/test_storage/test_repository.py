@@ -8,6 +8,7 @@ from src.models.canonical import (
     CaseRecord,
     CaseSearchQuery,
     FieldMappingRecord,
+    FirmIntegrationRecord,
     FirmRecord,
     StoredSyncState,
 )
@@ -30,13 +31,29 @@ async def _create_clean_repository() -> CaseRepositoryImpl:
     return repository
 
 
-def _save_firm(repository: CaseRepositoryImpl, firm_id: str, provider: str = "clio") -> None:
+def _save_firm(repository: CaseRepositoryImpl, firm_id: str) -> None:
     asyncio.run(
         repository.save_firm(
             FirmRecord(
                 firm_id=firm_id,
                 name=f"Firm {firm_id}",
+            )
+        )
+    )
+
+
+def _save_integration(
+    repository: CaseRepositoryImpl,
+    firm_id: str,
+    provider: str,
+    credentials: dict[str, str] | None = None,
+) -> None:
+    asyncio.run(
+        repository.save_firm_integration(
+            FirmIntegrationRecord(
+                firm_id=firm_id,
                 provider=provider,
+                provider_credentials=credentials or {},
             )
         )
     )
@@ -45,15 +62,32 @@ def _save_firm(repository: CaseRepositoryImpl, firm_id: str, provider: str = "cl
 def test_repository_saves_and_lists_firms() -> None:
     repository = asyncio.run(_create_clean_repository())
 
-    _save_firm(repository, "firm-1", provider="clio")
-    _save_firm(repository, "firm-2", provider="filevine")
+    _save_firm(repository, "firm-1")
+    _save_firm(repository, "firm-2")
 
     firms = asyncio.run(repository.list_firms())
     stored = asyncio.run(repository.get_firm("firm-1"))
 
     assert [firm.firm_id for firm in firms] == ["firm-1", "firm-2"]
     assert stored is not None
-    assert stored.provider == "clio"
+    assert stored.name == "Firm firm-1"
+
+    asyncio.run(repository.close())
+
+
+def test_repository_saves_and_lists_integrations() -> None:
+    repository = asyncio.run(_create_clean_repository())
+    _save_firm(repository, "firm-1")
+
+    _save_integration(repository, "firm-1", "clio", {"access_token": "token-1"})
+    _save_integration(repository, "firm-1", "filevine", {"sample_path": "/tmp/sample.json"})
+
+    stored = asyncio.run(repository.get_firm_integration("firm-1", "clio"))
+    integrations = asyncio.run(repository.list_firm_integrations("firm-1"))
+
+    assert stored is not None
+    assert stored.provider_credentials["access_token"] == "token-1"
+    assert [integration.provider for integration in integrations] == ["clio", "filevine"]
 
     asyncio.run(repository.close())
 
@@ -126,7 +160,7 @@ def test_repository_find_candidates_is_tenant_scoped() -> None:
 
 def test_repository_sync_state_round_trip() -> None:
     repository = asyncio.run(_create_clean_repository())
-    _save_firm(repository, "firm-1", provider="filevine")
+    _save_firm(repository, "firm-1")
 
     state = StoredSyncState(
         firm_id="firm-1",
@@ -147,7 +181,7 @@ def test_repository_sync_state_round_trip() -> None:
 
 def test_repository_saves_and_replaces_field_mappings() -> None:
     repository = asyncio.run(_create_clean_repository())
-    _save_firm(repository, "firm-1", provider="filevine")
+    _save_firm(repository, "firm-1")
 
     asyncio.run(
         repository.save_field_mappings(
