@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from src.api.case_lookup import CaseLookupService
-from src.models.canonical import FieldMappingRecord
+from src.models.canonical import FieldMappingRecord, FirmRecord
 from src.providers import ClioProvider, FilevineProvider
 from src.storage import CaseRepositoryImpl
 from src.sync import SyncEngine, SyncRequest, SyncScheduler
@@ -42,6 +42,15 @@ class SyncRequestPayload(BaseModel):
     firm_id: str
     provider: str
     credentials: dict[str, Any] = Field(default_factory=dict)
+    firm_name: str | None = None
+
+
+class FirmPayload(BaseModel):
+    firm_id: str
+    name: str
+    provider: str
+    provider_credentials: dict[str, Any] = Field(default_factory=dict)
+    is_active: bool = True
 
 
 class SyncBatchPayload(BaseModel):
@@ -64,6 +73,7 @@ def build_default_sync_requests() -> list[SyncRequest]:
                 firm_id=clio_firm_id,
                 provider="clio",
                 credentials={"access_token": clio_access_token},
+                firm_name=clio_firm_id,
             )
         )
 
@@ -75,6 +85,7 @@ def build_default_sync_requests() -> list[SyncRequest]:
                 firm_id=filevine_firm_id,
                 provider="filevine",
                 credentials={"sample_path": filevine_sample_path},
+                firm_name=filevine_firm_id,
             )
         )
 
@@ -82,7 +93,11 @@ def build_default_sync_requests() -> list[SyncRequest]:
 
 
 def create_app() -> FastAPI:
-    database_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./cms_integration.db")
+    database_url = os.getenv("DATABASE_URL")
+
+    if(database_url is None):
+        raise ValueError("DATABASE_URL is not set")
+
     repository = CaseRepositoryImpl(database_url)
     providers = {
         "clio": ClioProvider(
@@ -136,6 +151,38 @@ def create_app() -> FastAPI:
             "configured_sync_requests": len(scheduler.requests),
         }
 
+    @app.get("/firms")
+    async def list_firms() -> list[dict[str, Any]]:
+        firms = await repository.list_firms()
+        return [
+            {
+                "firm_id": firm.firm_id,
+                "name": firm.name,
+                "provider": firm.provider,
+                "provider_credentials": firm.provider_credentials,
+                "is_active": firm.is_active,
+            }
+            for firm in firms
+        ]
+
+    @app.post("/firms")
+    async def save_firm(payload: FirmPayload) -> dict[str, Any]:
+        await repository.save_firm(
+            FirmRecord(
+                firm_id=payload.firm_id,
+                name=payload.name,
+                provider=payload.provider,
+                provider_credentials=payload.provider_credentials,
+                is_active=payload.is_active,
+            )
+        )
+        return {
+            "firm_id": payload.firm_id,
+            "name": payload.name,
+            "provider": payload.provider,
+            "is_active": payload.is_active,
+        }
+
     #the case lookup endpoint
     @app.get("/cases/lookup", response_model=list[LookupResponse])
     async def lookup_cases(firm_id: str, name: str) -> list[LookupResponse]:
@@ -165,6 +212,7 @@ def create_app() -> FastAPI:
                     firm_id=item.firm_id,
                     provider=item.provider,
                     credentials=item.credentials,
+                    firm_name=item.firm_name,
                 )
                 for item in payload.requests
             ]
@@ -196,6 +244,10 @@ def create_app() -> FastAPI:
     #the field mapping endpoint (task for advanced stage)
     @app.post("/firms/{firm_id}/mapping")
     async def save_mappings(firm_id: str, payload: MappingPayload) -> dict[str, Any]:
+        firm = await repository.get_firm(firm_id)
+        if firm is None:
+            raise HTTPException(status_code=404, detail=f"Unknown firm_id: {firm_id}")
+
         records = [
             FieldMappingRecord(
                 firm_id=firm_id,
@@ -214,12 +266,14 @@ def create_app() -> FastAPI:
 
     return app
 
-
-app = create_app()
+if os.getenv("DATABASE_URL"):
+    app = create_app()
+else:
+    app = FastAPI(title="CMS Integration Layer")
 
 
 def main() -> None:
-    uvicorn.run("src.main:app", host="127.0.0.1", port=8000, reload=False)
+    uvicorn.run(create_app(), host="127.0.0.1", port=8000, reload=False)
 
 
 if __name__ == "__main__":

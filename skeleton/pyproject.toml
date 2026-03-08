@@ -7,7 +7,7 @@ dependencies = [
     "pydantic>=2.0",
     "httpx>=0.25",
     "sqlalchemy",
-    "aiosqlite",
+    "asyncpg",
     "apscheduler",
     "fastapi",
     "uvicorn",
