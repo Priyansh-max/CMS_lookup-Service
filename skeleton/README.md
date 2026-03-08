@@ -38,6 +38,10 @@ The test suite requires `TEST_DATABASE_URL` and will fail fast if it is not set.
 ## Endpoints
 
 - `GET /health`
+- `GET /firms`
+- `POST /firms`
+- `GET /firms/{firm_id}/integrations`
+- `POST /firms/{firm_id}/integrations`
 - `GET /cases/lookup?firm_id=<firm_id>&name=<client_name>`
 - `POST /sync`
 - `POST /firms/{firm_id}/mapping`
@@ -58,6 +62,19 @@ The test suite requires `TEST_DATABASE_URL` and will fail fast if it is not set.
       "credentials": {
         "sample_path": "D:/path/to/filevine_cases.json"
       }
+    }
+  ]
+}
+```
+
+You can also store credentials on an integration first and then sync without including them in the request body:
+
+```json
+{
+  "requests": [
+    {
+      "firm_id": "firm-filevine",
+      "provider": "filevine"
     }
   ]
 }
