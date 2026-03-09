@@ -9,6 +9,7 @@ from typing import Any
 from src.models.canonical import FirmIntegrationRecord, FirmRecord, StoredSyncState, SyncResult
 from src.providers.base import (
     CaseManagementProvider,
+    ProviderConfigurationError,
     ProviderError,
     ProviderSyncState,
 )
@@ -44,6 +45,7 @@ class SyncEngine:
         self.providers = providers
         self.transformers = transformers
 
+    #boss function
     async def sync_provider(self, request: SyncRequest) -> SyncResult:
         started_at = _utc_now()
 
