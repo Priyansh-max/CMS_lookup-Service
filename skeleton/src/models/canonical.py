@@ -6,13 +6,34 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 import re
+import unicodedata
 
 
 def normalize_name(value: str) -> str:
     """Normalize names so later lookup logic has a stable representation."""
 
-    cleaned = re.sub(r"[^a-z0-9\s]", " ", value.lower())
+    normalized = unicodedata.normalize("NFKD", value) #eg - Jöhn -> John
+    ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
+    cleaned = re.sub(r"[^a-z0-9\s]", " ", ascii_only.lower())
     return " ".join(cleaned.split())
+
+
+def normalize_phone(value: str | None) -> str | None:
+    """Normalize phone numbers into digits-only search keys."""
+
+    if not value:
+        return None
+    digits = re.sub(r"\D", "", value)
+    return digits or None
+
+
+def normalize_email(value: str | None) -> str | None:
+    """Normalize emails into lower-case search keys."""
+
+    if not value:
+        return None
+    normalized = value.strip().lower()
+    return normalized or None
 
 
 @dataclass(slots=True)
@@ -33,6 +54,14 @@ class CaseRecord:
     @property
     def normalized_client_name(self) -> str:
         return normalize_name(self.client_name)
+
+    @property
+    def normalized_client_phone(self) -> str | None:
+        return normalize_phone(self.client_phone)
+
+    @property
+    def normalized_client_email(self) -> str | None:
+        return normalize_email(self.client_email)
 
 
 @dataclass(slots=True)

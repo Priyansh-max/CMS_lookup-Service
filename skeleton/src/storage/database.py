@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, func
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -71,6 +71,32 @@ class CaseTable(Base):
             "external_case_id",
             name="uq_case_provider_identity",
         ),
+        Index(
+            "ix_cases_firm_normalized_name",
+            "firm_id",
+            "normalized_client_name",
+        ),
+        Index(
+            "ix_cases_firm_provider_normalized_name",
+            "firm_id",
+            "provider",
+            "normalized_client_name",
+        ),
+        Index(
+            "ix_cases_firm_normalized_phone",
+            "firm_id",
+            "normalized_client_phone",
+        ),
+        Index(
+            "ix_cases_firm_normalized_email",
+            "firm_id",
+            "normalized_client_email",
+        ),
+        Index(
+            "ix_cases_firm_updated_at",
+            "firm_id",
+            "updated_at",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -79,6 +105,8 @@ class CaseTable(Base):
     external_case_id: Mapped[str] = mapped_column(String(255))
     client_name: Mapped[str] = mapped_column(String(255), index=True)
     normalized_client_name: Mapped[str] = mapped_column(String(255), index=True)
+    normalized_client_phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    normalized_client_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     client_phone: Mapped[str | None] = mapped_column(String(100), nullable=True)
     client_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     case_status: Mapped[str | None] = mapped_column(String(100), nullable=True)

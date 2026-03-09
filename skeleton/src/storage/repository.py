@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import timezone
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, desc, or_, select
 
 from src.models.canonical import (
     CaseRecord,
@@ -194,6 +194,8 @@ class CaseRepositoryImpl(CaseRepository):
                             external_case_id=case.external_case_id,
                             client_name=case.client_name,
                             normalized_client_name=case.normalized_client_name,
+                            normalized_client_phone=case.normalized_client_phone,
+                            normalized_client_email=case.normalized_client_email,
                             client_phone=case.client_phone,
                             client_email=case.client_email,
                             case_status=case.case_status,
@@ -206,6 +208,8 @@ class CaseRepositoryImpl(CaseRepository):
 
                 existing.client_name = case.client_name
                 existing.normalized_client_name = case.normalized_client_name
+                existing.normalized_client_phone = case.normalized_client_phone
+                existing.normalized_client_email = case.normalized_client_email
                 existing.client_phone = case.client_phone
                 existing.client_email = case.client_email
                 existing.case_status = case.case_status
@@ -220,22 +224,64 @@ class CaseRepositoryImpl(CaseRepository):
         tokens = [token for token in normalized_name.split() if token]
 
         async with self.session_factory() as session:
-            stmt = select(CaseTable).where(CaseTable.firm_id == query.firm_id)
-            if normalized_name:
-                filters = [CaseTable.normalized_client_name.contains(normalized_name)]
-                filters.extend(
-                    CaseTable.normalized_client_name.contains(token) for token in tokens[:3]
-                )
-                stmt = stmt.where(or_(*filters))
+            rows = []
 
-            result = await session.execute(stmt.limit(max(query.limit * 10, 25)))
-            rows = result.scalars().all()
+            if normalized_name:
+                exact_stmt = (
+                    select(CaseTable)
+                    .where(
+                        CaseTable.firm_id == query.firm_id,
+                        CaseTable.normalized_client_name == normalized_name,
+                    )
+                    .order_by(desc(CaseTable.updated_at))
+                    .limit(query.limit)
+                )
+                exact_result = await session.execute(exact_stmt)
+                exact_rows = exact_result.scalars().all()
+                if exact_rows:
+                    return [_to_case_record(row) for row in exact_rows]
+
+                prefix_filters = [CaseTable.normalized_client_name.startswith(normalized_name)]
+                prefix_filters.extend(
+                    CaseTable.normalized_client_name.startswith(token) for token in tokens[:3]
+                )
+                prefix_stmt = (
+                    select(CaseTable)
+                    .where(
+                        CaseTable.firm_id == query.firm_id,
+                        or_(*prefix_filters),
+                    )
+                    .order_by(desc(CaseTable.updated_at))
+                    .limit(max(query.limit * 4, 20))
+                )
+                prefix_result = await session.execute(prefix_stmt)
+                rows = prefix_result.scalars().all()
+
+                if not rows:
+                    contains_filters = [CaseTable.normalized_client_name.contains(normalized_name)]
+                    contains_filters.extend(
+                        CaseTable.normalized_client_name.contains(token) for token in tokens[:3]
+                    )
+                    contains_stmt = (
+                        select(CaseTable)
+                        .where(
+                            CaseTable.firm_id == query.firm_id,
+                            or_(*contains_filters),
+                        )
+                        .order_by(desc(CaseTable.updated_at))
+                        .limit(max(query.limit * 10, 25))
+                    )
+                    contains_result = await session.execute(contains_stmt)
+                    rows = contains_result.scalars().all()
 
             # If the search terms are too noisy to match anything, return a small
             # tenant-scoped fallback set so the lookup layer can still rank results.
             if not rows:
                 fallback = await session.execute(
-                    select(CaseTable).where(CaseTable.firm_id == query.firm_id).limit(50)
+                    select(CaseTable)
+                    .where(CaseTable.firm_id == query.firm_id)
+                    .order_by(desc(CaseTable.updated_at))
+                    .limit(50)
                 )
                 rows = fallback.scalars().all()
 

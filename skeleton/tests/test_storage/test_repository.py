@@ -158,6 +158,31 @@ def test_repository_find_candidates_is_tenant_scoped() -> None:
     asyncio.run(repository.close())
 
 
+def test_repository_normalizes_names_for_lookup() -> None:
+    repository = asyncio.run(_create_clean_repository())
+    _save_firm(repository, "firm-1")
+
+    asyncio.run(
+        repository.save_case(
+            CaseRecord(
+                firm_id="firm-1",
+                provider="clio",
+                external_case_id="case-1",
+                client_name="Jöhn   Smith!",
+            )
+        )
+    )
+
+    results = asyncio.run(
+        repository.find_candidates_by_name(CaseSearchQuery(firm_id="firm-1", name="john smith"))
+    )
+
+    assert len(results) == 1
+    assert results[0].client_name == "Jöhn   Smith!"
+
+    asyncio.run(repository.close())
+
+
 def test_repository_sync_state_round_trip() -> None:
     repository = asyncio.run(_create_clean_repository())
     _save_firm(repository, "firm-1")
