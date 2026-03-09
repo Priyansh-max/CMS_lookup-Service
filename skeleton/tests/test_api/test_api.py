@@ -118,14 +118,17 @@ def test_filevine_bootstrap_stores_pat(monkeypatch) -> None:
             json={
                 "firm_id": "firm-1",
                 "pat": "filevine-pat",
+                "auto_sync_enabled": True,
             },
         )
         assert bootstrap_response.status_code == 200
         assert bootstrap_response.json()["bootstrapped"] is True
+        assert bootstrap_response.json()["auto_sync_enabled"] is True
 
         integrations_response = client.get("/firms/firm-1/integrations")
         assert integrations_response.status_code == 200
         assert integrations_response.json()[0]["provider"] == "filevine"
+        assert integrations_response.json()[0]["auto_sync_enabled"] is True
 
 
 def test_sync_lookup_and_mapping_end_to_end(monkeypatch, tmp_path) -> None:

@@ -290,8 +290,16 @@ def test_sync_scheduler_start_and_stop(monkeypatch) -> None:
         async def sync_provider(self, request):
             return None
 
+    class DummyRepository:
+        async def list_firms(self):
+            return []
+
+        async def list_firm_integrations(self, firm_id):
+            return []
+
     scheduler = SyncScheduler(
         sync_engine=DummyEngine(),  # type: ignore[arg-type]
+        repository=DummyRepository(),  # type: ignore[arg-type]
         requests=[],
         interval_seconds=10,
     )
@@ -311,3 +319,64 @@ def test_sync_scheduler_start_and_stop(monkeypatch) -> None:
 
     assert started["value"] is True
     assert stopped["value"] is True
+
+
+def test_sync_scheduler_discovers_active_integrations_from_repository() -> None:
+    class DummyRepository:
+        async def list_firms(self):
+            return [
+                FirmRecord(firm_id="firm-1", name="Firm One", is_active=True),
+                FirmRecord(firm_id="firm-2", name="Firm Two", is_active=False),
+            ]
+
+        async def list_firm_integrations(self, firm_id):
+            if firm_id == "firm-1":
+                return [
+                    FirmIntegrationRecord(
+                        firm_id="firm-1",
+                        provider="filevine",
+                        provider_credentials={"sample_path": "demo.json"},
+                        is_active=True,
+                        auto_sync_enabled=True,
+                    ),
+                    FirmIntegrationRecord(
+                        firm_id="firm-1",
+                        provider="clio",
+                        provider_credentials={"access_token": "token"},
+                        is_active=True,
+                        auto_sync_enabled=False,
+                    ),
+                    FirmIntegrationRecord(
+                        firm_id="firm-1",
+                        provider="hubspot",
+                        provider_credentials={"token": "ignored"},
+                        is_active=False,
+                        auto_sync_enabled=True,
+                    ),
+                ]
+            return [
+                FirmIntegrationRecord(
+                    firm_id=firm_id,
+                    provider="filevine",
+                    provider_credentials={"sample_path": "ignored.json"},
+                    is_active=True,
+                    auto_sync_enabled=True,
+                )
+            ]
+
+    class DummyEngine:
+        async def sync_provider(self, request):
+            return None
+
+    scheduler = SyncScheduler(
+        sync_engine=DummyEngine(),  # type: ignore[arg-type]
+        repository=DummyRepository(),  # type: ignore[arg-type]
+        requests=[],
+        interval_seconds=10,
+    )
+
+    requests = asyncio.run(scheduler.refresh_requests())
+
+    assert len(requests) == 1
+    assert requests[0].firm_id == "firm-1"
+    assert requests[0].provider == "filevine"

@@ -47,6 +47,7 @@ class FirmIntegrationTable(Base):
     provider: Mapped[str] = mapped_column(String(50), index=True)
     provider_credentials: Mapped[dict] = mapped_column(JSON, default=dict)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    auto_sync_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

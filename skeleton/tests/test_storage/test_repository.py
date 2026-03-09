@@ -47,6 +47,8 @@ def _save_integration(
     firm_id: str,
     provider: str,
     credentials: dict[str, str] | None = None,
+    *,
+    auto_sync_enabled: bool = False,
 ) -> None:
     asyncio.run(
         repository.save_firm_integration(
@@ -54,6 +56,7 @@ def _save_integration(
                 firm_id=firm_id,
                 provider=provider,
                 provider_credentials=credentials or {},
+                auto_sync_enabled=auto_sync_enabled,
             )
         )
     )
@@ -87,7 +90,28 @@ def test_repository_saves_and_lists_integrations() -> None:
 
     assert stored is not None
     assert stored.provider_credentials["access_token"] == "token-1"
+    assert stored.auto_sync_enabled is False
     assert [integration.provider for integration in integrations] == ["clio", "filevine"]
+
+    asyncio.run(repository.close())
+
+
+def test_repository_persists_auto_sync_flag_on_integrations() -> None:
+    repository = asyncio.run(_create_clean_repository())
+    _save_firm(repository, "firm-1")
+
+    _save_integration(
+        repository,
+        "firm-1",
+        "filevine",
+        {"sample_path": "/tmp/sample.json"},
+        auto_sync_enabled=True,
+    )
+
+    stored = asyncio.run(repository.get_firm_integration("firm-1", "filevine"))
+
+    assert stored is not None
+    assert stored.auto_sync_enabled is True
 
     asyncio.run(repository.close())
 

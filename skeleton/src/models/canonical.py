@@ -93,6 +93,7 @@ class FirmIntegrationRecord:
     provider: str = ""
     provider_credentials: dict[str, Any] = field(default_factory=dict)
     is_active: bool = True
+    auto_sync_enabled: bool = False
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

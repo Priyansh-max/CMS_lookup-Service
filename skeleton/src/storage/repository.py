@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import timezone
 
-from sqlalchemy import delete, desc, or_, select
+from sqlalchemy import delete, desc, or_, select, text
 
 from src.models.canonical import (
     CaseRecord,
@@ -64,6 +64,7 @@ def _to_firm_integration_record(row: FirmIntegrationTable) -> FirmIntegrationRec
         provider=row.provider,
         provider_credentials=row.provider_credentials or {},
         is_active=row.is_active,
+        auto_sync_enabled=row.auto_sync_enabled,
         created_at=_ensure_utc(row.created_at),
         updated_at=_ensure_utc(row.updated_at),
     )
@@ -82,6 +83,12 @@ class CaseRepositoryImpl(CaseRepository):
     async def initialize(self) -> None:
         async with self.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
+            await connection.execute(
+                text(
+                    "ALTER TABLE firm_integrations "
+                    "ADD COLUMN IF NOT EXISTS auto_sync_enabled BOOLEAN DEFAULT FALSE NOT NULL"
+                )
+            )
 
     async def save_firm(self, firm: FirmRecord) -> None:
         async with self.session_factory() as session:
@@ -133,11 +140,13 @@ class CaseRepositoryImpl(CaseRepository):
                         provider=integration.provider,
                         provider_credentials=integration.provider_credentials,
                         is_active=integration.is_active,
+                        auto_sync_enabled=integration.auto_sync_enabled,
                     )
                 )
             else:
                 existing.provider_credentials = integration.provider_credentials
                 existing.is_active = integration.is_active
+                existing.auto_sync_enabled = integration.auto_sync_enabled
 
             await session.commit()
 

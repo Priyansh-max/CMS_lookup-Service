@@ -5,6 +5,9 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 import os
 from typing import Any
+from dotenv import load_dotenv
+
+load_dotenv()
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -61,18 +64,21 @@ class FirmIntegrationPayload(BaseModel):
     provider: str
     provider_credentials: dict[str, Any] = Field(default_factory=dict)
     is_active: bool = True
+    auto_sync_enabled: bool = False
 
 
 class ClioBootstrapPayload(BaseModel):
     firm_id: str
     code: str | None = None
     is_active: bool = True
+    auto_sync_enabled: bool = False
 
 
 class FilevineBootstrapPayload(BaseModel):
     firm_id: str
     pat: str
     is_active: bool = True
+    auto_sync_enabled: bool = False
 
 
 class SyncBatchPayload(BaseModel):
@@ -91,6 +97,7 @@ async def _bootstrap_clio_integration(
     firm_id: str,
     code: str,
     is_active: bool = True,
+    auto_sync_enabled: bool = False,
 ) -> dict[str, Any]:
     firm = await repository.get_firm(firm_id)
     if firm is None:
@@ -110,6 +117,7 @@ async def _bootstrap_clio_integration(
             provider="clio",
             provider_credentials=integration_credentials,
             is_active=is_active,
+            auto_sync_enabled=auto_sync_enabled,
         )
     )
     return {
@@ -119,6 +127,7 @@ async def _bootstrap_clio_integration(
         "has_refresh_token": bool(integration_credentials.get("refresh_token")),
         "token_expires_at": integration_credentials.get("token_expires_at"),
         "is_active": is_active,
+        "auto_sync_enabled": auto_sync_enabled,
     }
 
 
@@ -186,8 +195,7 @@ def create_app() -> FastAPI:
             ),
             user_agent=os.getenv(
                 "FILEVINE_USER_AGENT",
-                "firm-cms-integration-service
-                /1.0",
+                "firm-cms-integration-service/1.0",
             ),
         ),
     }
@@ -203,16 +211,22 @@ def create_app() -> FastAPI:
     lookup_service = CaseLookupService(repository)
     scheduler = SyncScheduler(
         sync_engine=sync_engine,
+        repository=repository,
         requests=build_default_sync_requests(),
         interval_seconds=int(os.getenv("SYNC_INTERVAL_SECONDS", "300")),
     )
     scheduler_enabled = _env_bool(os.getenv("SCHEDULER_ENABLED"), default=False)
 
+    async def _refresh_scheduler_requests() -> None:
+        await scheduler.refresh_schedule()
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await repository.initialize()
-        if scheduler_enabled and scheduler.requests:
+        if scheduler_enabled:
             await scheduler.start()
+        else:
+            await scheduler.refresh_requests()
         try:
             yield
         finally:
@@ -254,13 +268,16 @@ def create_app() -> FastAPI:
                 "bootstrapped": False,
             }
 
-        return await _bootstrap_clio_integration(
+        result = await _bootstrap_clio_integration(
             repository=repository,
             provider_client=providers["clio"],
             firm_id=payload.firm_id,
             code=payload.code,
             is_active=payload.is_active,
+            auto_sync_enabled=payload.auto_sync_enabled,
         )
+        await _refresh_scheduler_requests()
+        return result
 
     @app.post("/auth/filevine/bootstrap")
     async def filevine_bootstrap(payload: FilevineBootstrapPayload) -> dict[str, Any]:
@@ -280,14 +297,17 @@ def create_app() -> FastAPI:
                 provider="filevine",
                 provider_credentials={"pat": payload.pat},
                 is_active=payload.is_active,
+                auto_sync_enabled=payload.auto_sync_enabled,
             )
         )
+        await _refresh_scheduler_requests()
         return {
             "firm_id": payload.firm_id,
             "provider": "filevine",
             "bootstrapped": True,
             "stored_credentials": ["pat"],
             "is_active": payload.is_active,
+            "auto_sync_enabled": payload.auto_sync_enabled,
         }
 
     @app.get("/firms")
@@ -311,6 +331,7 @@ def create_app() -> FastAPI:
                 is_active=payload.is_active,
             )
         )
+        await _refresh_scheduler_requests()
         return {
             "firm_id": payload.firm_id,
             "name": payload.name,
@@ -331,6 +352,7 @@ def create_app() -> FastAPI:
                 "provider": integration.provider,
                 "has_credentials": bool(integration.provider_credentials),
                 "is_active": integration.is_active,
+                "auto_sync_enabled": integration.auto_sync_enabled,
             }
             for integration in integrations
         ]
@@ -350,12 +372,15 @@ def create_app() -> FastAPI:
                 provider=payload.provider,
                 provider_credentials=payload.provider_credentials,
                 is_active=payload.is_active,
+                auto_sync_enabled=payload.auto_sync_enabled,
             )
         )
+        await _refresh_scheduler_requests()
         return {
             "firm_id": firm_id,
             "provider": payload.provider,
             "is_active": payload.is_active,
+            "auto_sync_enabled": payload.auto_sync_enabled,
         }
 
     #the case lookup endpoint
@@ -392,7 +417,7 @@ def create_app() -> FastAPI:
                 for item in payload.requests
             ]
         else:
-            requests = scheduler.requests
+            requests = await scheduler.refresh_requests()
 
         if not requests:
             raise HTTPException(
