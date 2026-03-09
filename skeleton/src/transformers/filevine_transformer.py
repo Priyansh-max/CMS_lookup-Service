@@ -12,14 +12,14 @@ class FilevineTransformer(CaseTransformer):
     """Transform Filevine payloads into canonical case records."""
 
     default_mappings = {
-        "external_case_id": ["project.project_id", "project.id", "id"],
+        "external_case_id": ["items.projectID","project.project_id", "project.id", "id"],
         # Filevine names may be split; the shared helper joins multiple paths.
-        "client_name": ["contact.full_name", "contact.first_name", "contact.last_name"],
-        "client_phone": ["contact.mobile_phone", "contact.phone", "contact.primary_phone"],
-        "client_email": ["contact.email", "contact.primary_email"],
-        "case_status": ["project.phase", "project.status"],
-        "assigned_staff": ["project.primary_attorney", "project.assigned_staff"],
-        "updated_at": ["project.last_activity_at", "updated_at"],
+        "client_name": ["items.project.ClientName", "contact.full_name", "contact.first_name", "contact.last_name"],
+        "client_phone": ["items.orgContact.phones[0].number","contact.mobile_phone", "contact.phone", "contact.primary_phone"],
+        "client_email": ["items.orgContact.emails[0].address", "contact.email", "contact.primary_email"],
+        "case_status": ["items.project.phaseName", "project.phase", "project.status"],
+        "assigned_staff": ["items.fullName","project.primary_attorney", "project.assigned_staff"],
+        "updated_at": ["items.project.LastActivity","project.last_activity_at", "updated_at"],
     }
 
     def transform(
