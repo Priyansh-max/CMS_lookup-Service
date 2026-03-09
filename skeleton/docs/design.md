@@ -10,7 +10,7 @@ Build a production-minded backend service that can connect one firm to multiple 
 - `PostgreSQL` as the only runtime and test database path, accessed through `SQLAlchemy`
 - Multi-provider firm model:
   - `firms` stores tenant identity
-  - `firm_integrations` stores provider-specific credentials and integration state
+  - `firm_integrations` stores provider-specific credentials, activation state, and auto-sync control
 - Provider support:
   - `Clio` with OAuth bootstrap, stored access/refresh tokens, and automatic refresh
   - `Filevine` with two ingestion modes:
@@ -25,6 +25,7 @@ Build a production-minded backend service that can connect one firm to multiple 
   - upserts cases
   - updates provider-specific sync state
 - Manual sync API and in-process scheduled sync support
+  - scheduler now discovers jobs from active `firm_integrations` with `auto_sync_enabled=true`
 - Local lookup API with DB-backed candidate narrowing and app-side fuzzy ranking
 - Provider, storage, sync, and API tests around the main paths
 
@@ -77,6 +78,7 @@ This keeps provider-specific payloads out of the rest of the application.
 
 - one row per `firm_id + provider`
 - stores provider-specific credentials/config
+- stores integration-level scheduler control through `auto_sync_enabled`
 - current examples:
   - Clio: `access_token`, `refresh_token`, `token_expires_at`
   - Filevine: initial `pat`, then derived `access_token`, `user_id`, `org_id`, `token_expires_at`
@@ -206,6 +208,7 @@ Tradeoff:
 Why:
 - simple to operate in a take-home / early service stage
 - enough for periodic sync demonstrations
+- integrations can opt into auto-sync individually through `firm_integrations.auto_sync_enabled`
 
 Tradeoff:
 - not ideal for high-volume production scheduling or distributed coordination
